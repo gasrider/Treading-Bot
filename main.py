@@ -74,7 +74,7 @@ def cmd_run(cfg, args):
         exchange = make_exchange(cfg["exchange"])
         p = cfg["paper"]
         broker = PaperBroker(exchange, state, p["starting_balance"], p["fee"], p["slippage"])
-    bot = TradingBot(cfg, exchange, broker, store, notifier, state)
+    bot = TradingBot(cfg, exchange, broker, store, notifier, state, config_path=args.config)
     try:
         bot.run()
     except KeyboardInterrupt:
@@ -96,7 +96,7 @@ def cmd_reset_halt(cfg, args):
 def cmd_dashboard(cfg, args):
     from tradingbot.dashboard import serve
 
-    serve(cfg, state_path(cfg))
+    serve(args.config, state_path(cfg))
 
 
 def main():

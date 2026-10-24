@@ -7,6 +7,7 @@ from pathlib import Path
 import ccxt
 import pandas as pd
 
+from .config import config_files, load_config
 from .data import fetch_recent
 from .risk import RiskGuard, position_size
 from .strategy import add_indicators, initial_levels, signal_at, trail_stop, warmup_bars
@@ -16,11 +17,19 @@ log = logging.getLogger(__name__)
 KILL_SWITCH = Path("state") / "STOP"      # anlegen = alles verkaufen, Handel stoppen
 RESUME_FILE = Path("state") / "RESUME"    # anlegen = Stopp/Notbremse aufheben
 EQUITY_HISTORY_MAX = 24 * 365
+MARKET_CANDLES = 96                       # so viele Kerzen zeigt das Dashboard pro Paar
+
+
+def compact(x: float) -> float:
+    """Auf 6 signifikante Stellen runden – hält die State-Datei klein, auch bei Cent-Kursen."""
+    return float(f"{x:.6g}")
 
 
 class TradingBot:
-    def __init__(self, cfg, exchange, broker, store, notifier, state=None):
+    def __init__(self, cfg, exchange, broker, store, notifier, state=None, config_path=None):
         self.cfg = cfg
+        self.config_path = config_path
+        self._config_stamp = self._stamp()
         self.exchange = exchange
         self.broker = broker
         self.store = store
@@ -108,8 +117,93 @@ class TradingBot:
             self.state["halted"] = True
             self.state["halt_reason"] = "Not-Aus ausgelöst"
 
+    def _stamp(self):
+        if not self.config_path:
+            return None
+        return tuple(p.stat().st_mtime if p.exists() else None for p in config_files(self.config_path))
+
+    def reload_config_if_changed(self) -> None:
+        """Änderungen aus Dashboard/config.yaml ohne Neustart übernehmen."""
+        stamp = self._stamp()
+        if stamp == self._config_stamp:
+            return
+        self._config_stamp = stamp
+        try:
+            new = load_config(self.config_path)
+        except Exception as e:
+            log.error("Neue Einstellungen ungültig, alte bleiben aktiv: %s", e)
+            self.notifier.send(f"⚠️ Einstellungen nicht übernommen: {e}")
+            return
+        if new["mode"] != self.cfg["mode"] or new["exchange"] != self.cfg["exchange"]:
+            log.warning("Modus/Börse ändern sich erst nach einem Neustart (tradingbot restart).")
+            new["mode"], new["exchange"] = self.cfg["mode"], self.cfg["exchange"]
+        self.cfg = new
+        self.params = new["strategy"]
+        self.guard.cfg = new["risk"]
+        self.notifier.send(
+            f"⚙️ Neue Einstellungen aktiv: {', '.join(new['symbols'])} auf {new['timeframe']}, "
+            f"Risiko {new['risk']['risk_per_trade'] * 100:g} % pro Trade"
+        )
+
+    def update_market(self, symbol: str, data: pd.DataFrame, price: float | None) -> None:
+        """Momentaufnahme dessen, was der Bot sieht – für die Marktansicht im Dashboard."""
+        tail = data.iloc[-MARKET_CANDLES:]
+        last = data.iloc[-1]
+        self.state.setdefault("market", {})[symbol] = {
+            "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "timeframe": self.cfg["timeframe"],
+            "price": compact(price if price else last["close"]),
+            "candles": [
+                [ts.isoformat(), *(compact(row[k]) for k in ("open", "high", "low", "close"))]
+                for ts, row in tail.iterrows()
+            ],
+            "ema_fast": [compact(v) for v in tail["ema_fast"]],
+            "ema_slow": [compact(v) for v in tail["ema_slow"]],
+            "ema_trend": [compact(v) for v in tail["ema_trend"]],
+            "rsi": round(float(last["rsi"]), 1),
+            "atr": compact(last["atr"]),
+            "uptrend": bool(last["close"] > last["ema_trend"]),
+            "fast_above_slow": bool(last["ema_fast"] > last["ema_slow"]),
+            "rsi_ok": bool(last["rsi"] < self.params["rsi_max_entry"]),
+            "entry_signal": bool(last["entry"]),
+            "exit_signal": bool(last["exit"]),
+            "error": "",
+        }
+
+    def process_symbol(self, symbol: str, price: float | None) -> None:
+        limit = min(720, warmup_bars(self.params) + 300)
+        df = fetch_recent(self.exchange, symbol, self.cfg["timeframe"], limit=limit)
+        if len(df) < warmup_bars(self.params):
+            log.warning("%s: zu wenige Kerzen (%d)", symbol, len(df))
+            return
+        data = add_indicators(df, self.params)
+        self.update_market(symbol, data, price)
+        last_ts = str(df.index[-1])
+        if self.state["last_bar"].get(symbol) == last_ts:
+            return
+        self.state["last_bar"][symbol] = last_ts
+        sig = signal_at(data, -1)
+        pos = self.state["positions"].get(symbol)
+        log.info(
+            "%s Kerze %s: Schluss %.2f | EMA %.2f/%.2f/%.2f | RSI %.1f",
+            symbol, last_ts, sig.close, data["ema_fast"].iat[-1], data["ema_slow"].iat[-1],
+            data["ema_trend"].iat[-1], data["rsi"].iat[-1],
+        )
+        if pos:
+            pos["highest"] = max(pos["highest"], sig.high)
+            pos["stop"] = trail_stop(pos["stop"], pos["highest"], sig.atr, self.params)
+            if sig.exit:
+                self.close_position(symbol, "Trendwende")
+        elif sig.entry and symbol in self.cfg["symbols"]:
+            ok, why = self.guard.can_open(self.equity(), len(self.state["positions"]))
+            if ok:
+                self.open_position(symbol, sig.atr, self.equity())
+            else:
+                log.info("%s: Kaufsignal ignoriert – %s", symbol, why)
+
     # ---------- Ein Durchlauf ----------
     def step(self) -> None:
+        self.reload_config_if_changed()
         self.handle_control_files()
         if self.state["halted"] and self.state["halt_reason"].startswith("Not-Aus"):
             if not self._halt_notified:
@@ -118,11 +212,24 @@ class TradingBot:
             self.store.save(self.state)
             return
 
-        # 1) Stops und Take-Profits mit aktuellem Kurs prüfen
+        # Paare aus der Konfiguration plus alle, in denen noch eine Position offen ist
+        symbols = list(dict.fromkeys([*self.cfg["symbols"], *self.state["positions"]]))
+        for symbol in list(self.state.get("market", {})):
+            if symbol not in symbols:
+                del self.state["market"][symbol]
+
+        # 1) Aktuelle Kurse holen; Stops und Take-Profits prüfen
         prices = {}
+        for symbol in symbols:
+            try:
+                prices[symbol] = self.broker.price(symbol)
+            except (ccxt.NetworkError, ccxt.ExchangeNotAvailable):
+                if symbol in self.state["positions"]:
+                    raise  # ohne Kurs keine Stop-Überwachung – ganzer Durchlauf neu
+            except Exception as e:
+                log.error("%s: Kurs nicht abrufbar: %s", symbol, e)
         for symbol, pos in list(self.state["positions"].items()):
-            price = self.broker.price(symbol)
-            prices[symbol] = price
+            price = prices[symbol]
             if price <= pos["stop"]:
                 self.close_position(symbol, "Stop-Loss")
             elif pos["tp"] and price >= pos["tp"]:
@@ -130,6 +237,7 @@ class TradingBot:
 
         # 2) Risiko-Notbremse
         equity = self.equity(prices)
+        self.state["equity"] = round(equity, 2)
         self.guard.update(equity)
         self.record_equity(equity)
         if self.state["halted"]:
@@ -141,36 +249,15 @@ class TradingBot:
             self.store.save(self.state)
             return
 
-        # 3) Neue abgeschlossene Kerzen auswerten
-        limit = min(720, warmup_bars(self.params) + 300)
-        for symbol in self.cfg["symbols"]:
-            df = fetch_recent(self.exchange, symbol, self.cfg["timeframe"], limit=limit)
-            if len(df) < warmup_bars(self.params):
-                log.warning("%s: zu wenige Kerzen (%d)", symbol, len(df))
-                continue
-            last_ts = str(df.index[-1])
-            if self.state["last_bar"].get(symbol) == last_ts:
-                continue
-            self.state["last_bar"][symbol] = last_ts
-            data = add_indicators(df, self.params)
-            sig = signal_at(data, -1)
-            pos = self.state["positions"].get(symbol)
-            log.info(
-                "%s Kerze %s: Schluss %.2f | EMA %.2f/%.2f/%.2f | RSI %.1f",
-                symbol, last_ts, sig.close, data["ema_fast"].iat[-1], data["ema_slow"].iat[-1],
-                data["ema_trend"].iat[-1], data["rsi"].iat[-1],
-            )
-            if pos:
-                pos["highest"] = max(pos["highest"], sig.high)
-                pos["stop"] = trail_stop(pos["stop"], pos["highest"], sig.atr, self.params)
-                if sig.exit:
-                    self.close_position(symbol, "Trendwende")
-            elif sig.entry:
-                ok, why = self.guard.can_open(self.equity(), len(self.state["positions"]))
-                if ok:
-                    self.open_position(symbol, sig.atr, self.equity())
-                else:
-                    log.info("%s: Kaufsignal ignoriert – %s", symbol, why)
+        # 3) Kerzen auswerten – ein fehlerhaftes Paar blockiert nicht die anderen
+        for symbol in symbols:
+            try:
+                self.process_symbol(symbol, prices.get(symbol))
+            except (ccxt.NetworkError, ccxt.ExchangeNotAvailable):
+                raise
+            except Exception as e:
+                log.error("%s: %s", symbol, e)
+                self.state.setdefault("market", {}).setdefault(symbol, {})["error"] = str(e)[:200]
         self.store.save(self.state)
 
     def run(self) -> None:

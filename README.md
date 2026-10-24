@@ -75,16 +75,23 @@ Der Bot startet im **Paper-Modus**: echte Kurse, virtuelle 1000 €. Lass ihn so
 
 ## 2. Das Dashboard
 
-Unter `https://<deine-adresse>` siehst du nach dem Login:
+Unter `https://<deine-adresse>` gibt es nach dem Login zwei Seiten:
 
+**Übersicht**
 - **Status**: läuft / gestoppt / keine Antwort, dazu der Modus (PAPER oder LIVE)
 - **Kapital**, Höchststand, realisierter Gewinn, Trefferquote
-- **Kapitalverlauf** als Grafik
-- **Offene Positionen** mit Stop und Ziel sowie die **letzten Trades**
-- die letzten **Log-Zeilen**
+- **Märkte – was der Bot gerade sieht**: Für jedes Paar der aktuelle Kurs und ein Kerzen-Chart mit den drei EMA-Linien der Strategie. Bei offenen Positionen sind Einstieg, Stop und Ziel eingezeichnet. Dazu gibt es eine Ampel mit den Kaufbedingungen und einen Satz, **worauf der Bot gerade wartet**, z. B. „Kein Aufwärtstrend – der Bot kauft nicht“. Über den Link **„Live-Chart auf TradingView“** siehst du den Kurs in Echtzeit.
+- **Offene Positionen**, **letzte Trades**, **Kapitalverlauf** und die letzten **Log-Zeilen**
 - **🛑 NOT-AUS**: verkauft sofort alles und stoppt den Handel. Danach erscheint **▶️ Handel wieder freigeben**.
 
-Die Seite aktualisiert sich jede Minute und ist für das Handy optimiert. Tipp: Im Handy-Browser „Zum Startbildschirm hinzufügen“.
+**Einstellungen**
+- Handelspaare (Häkchen oder eigene Paare wie `ATOM/EUR`), Kerzen-Intervall, alle Strategie- und Risikowerte
+- Ungültige Werte werden abgelehnt (z. B. höchstens 3 % Risiko pro Trade).
+- Der Bot übernimmt Änderungen **innerhalb einer Minute ohne Neustart** und meldet sie per Telegram.
+- Gespeichert wird in `state/settings.yaml`. **„Auf config.yaml zurücksetzen“** verwirft die Änderungen wieder.
+- **Modus (paper/live) und Börse** lassen sich aus Sicherheitsgründen **nur am Server** ändern (`tradingbot config`).
+
+Die Übersicht aktualisiert sich jede Minute und ist für das Handy optimiert. Tipp: Im Handy-Browser „Zum Startbildschirm hinzufügen“.
 
 ---
 
@@ -110,7 +117,7 @@ Per SSH verbinden (`ssh root@<SERVER-IP>`), dann:
 | `tradingbot logs` | Live-Log (Strg+C beendet nur die Anzeige) |
 | `tradingbot stop` | **NOT-AUS**: alles verkaufen, Handel stoppen |
 | `tradingbot resume` | Handel nach Not-Aus/Notbremse wieder freigeben |
-| `tradingbot config` | Strategie/Risiko bearbeiten (`config.yaml`), danach automatischer Neustart |
+| `tradingbot config` | Grundeinstellungen inkl. Modus/Börse bearbeiten (`config.yaml`), danach automatischer Neustart. Werte, die du im Dashboard gespeichert hast, haben Vorrang. |
 | `tradingbot env` | Passwörter und Schlüssel bearbeiten (`.env`), danach automatischer Neustart |
 | `tradingbot backtest` | Backtest direkt auf dem Server |
 | `tradingbot update` | Neueste Version sofort holen (passiert sonst täglich automatisch) |
@@ -240,7 +247,7 @@ Empfohlen:
 
 ## 10. Konfiguration anpassen
 
-Mit `tradingbot config` bearbeitest du die Einstellungen. Alle Optionen sind dort kommentiert, die Vorlage ist [`config.example.yaml`](config.example.yaml). Die wichtigsten:
+Am einfachsten änderst du die Einstellungen im Dashboard unter **„Einstellungen“**. Alternativ geht es mit `tradingbot config`. Alle Optionen sind dort kommentiert, die Vorlage ist [`config.example.yaml`](config.example.yaml). Die wichtigsten:
 
 - `symbols`: Handelspaare, z. B. `[BTC/EUR, ETH/EUR, SOL/EUR]`
 - `timeframe`: `1h` (Standard), `4h` (weniger Trades, weniger Gebühren) oder `15m` (mehr Trades, mehr Rauschen)
