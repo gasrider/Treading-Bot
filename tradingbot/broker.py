@@ -8,43 +8,60 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class Fill:
-    qty: float      # tatsächlich gehaltene/verkaufte Menge (Basis-Währung)
-    price: float    # Durchschnittspreis
-    fee: float      # Gebühr in Quote-Währung
+    qty: float      # tatsächlich gehaltene/verkaufte Menge
+    price: float    # Durchschnittspreis in der Notierungswährung des Instruments
+    fee: float      # Gebühr in Konto-Währung (EUR)
+    fx: float = 1.0  # Umrechnungsfaktor Notierungswährung -> Konto-Währung
 
 
 class PaperBroker:
-    """Echte Kurse, virtuelles Geld. Kontostand liegt im state-Dict."""
+    """Echte Kurse, virtuelles Geld. Kontostand (EUR) liegt im state-Dict.
 
-    def __init__(self, exchange, state: dict, starting_balance: float, fee: float, slippage: float):
-        self.exchange = exchange
+    Kurse kommen über `quote_fn(symbol) -> (kurs, fx)`; der Bot setzt dafür seine
+    Marktdaten ein (Krypto, Aktien, Rohstoffe, Devisen). Werte in Fremdwährung werden
+    mit dem aktuellen Wechselkurs in EUR umgerechnet.
+    """
+
+    def __init__(self, source, state: dict, starting_balance: float, fee: float, slippage: float):
+        self.quote_fn = None
+        if source is not None and hasattr(source, "fetch_ticker"):
+            self.quote_fn = lambda s: (float(source.fetch_ticker(s)["last"]), 1.0)
         self.state = state
         self.fee = fee
         self.slippage = slippage
+        self.cost_fn = lambda symbol: (self.fee, self.slippage)  # der Bot setzt Kosten je Anlageklasse
         state.setdefault("paper_cash", float(starting_balance))
 
+    def quote(self, symbol: str) -> tuple[float, float]:
+        return self.quote_fn(symbol)
+
     def price(self, symbol: str) -> float:
-        return float(self.exchange.fetch_ticker(symbol)["last"])
+        return self.quote(symbol)[0]
 
     def quote_balance(self) -> float:
         return self.state["paper_cash"]
 
     def buy(self, symbol: str, qty: float) -> Fill:
-        price = self.price(symbol) * (1 + self.slippage)
-        cost = qty * price
-        fee = cost * self.fee
+        fee_rate, slippage = self.cost_fn(symbol)
+        price, fx = self.quote(symbol)
+        price *= 1 + slippage
+        cost = qty * price * fx
+        fee = cost * fee_rate
         if cost + fee > self.state["paper_cash"]:
-            qty = self.state["paper_cash"] / (price * (1 + self.fee))
-            cost, fee = qty * price, qty * price * self.fee
+            qty = self.state["paper_cash"] / (price * fx * (1 + fee_rate))
+            cost = qty * price * fx
+            fee = cost * fee_rate
         self.state["paper_cash"] -= cost + fee
-        return Fill(qty, price, fee)
+        return Fill(qty, price, fee, fx)
 
     def sell(self, symbol: str, qty: float) -> Fill:
-        price = self.price(symbol) * (1 - self.slippage)
-        proceeds = qty * price
-        fee = proceeds * self.fee
+        fee_rate, slippage = self.cost_fn(symbol)
+        price, fx = self.quote(symbol)
+        price *= 1 - slippage
+        proceeds = qty * price * fx
+        fee = proceeds * fee_rate
         self.state["paper_cash"] += proceeds - fee
-        return Fill(qty, price, fee)
+        return Fill(qty, price, fee, fx)
 
 
 class LiveBroker:
@@ -52,7 +69,7 @@ class LiveBroker:
 
     def __init__(self, exchange, quote: str):
         self.exchange = exchange
-        self.quote = quote
+        self.quote_ccy = quote
         exchange.load_markets()
         if not exchange.has.get("fetchBalance"):
             raise RuntimeError(f"{exchange.id} unterstützt kein fetchBalance")
@@ -60,8 +77,11 @@ class LiveBroker:
     def price(self, symbol: str) -> float:
         return float(self.exchange.fetch_ticker(symbol)["last"])
 
+    def quote(self, symbol: str) -> tuple[float, float]:
+        return self.price(symbol), 1.0  # Krypto-Paare notieren in der Konto-Währung
+
     def quote_balance(self) -> float:
-        return float(self.exchange.fetch_balance()["free"].get(self.quote, 0.0) or 0.0)
+        return float(self.exchange.fetch_balance()["free"].get(self.quote_ccy, 0.0) or 0.0)
 
     def base_balance(self, symbol: str) -> float:
         base = symbol.split("/")[0]
@@ -96,7 +116,7 @@ class LiveBroker:
             if side == "buy":
                 filled -= fee_cost
             fee_cost *= avg
-        log.info("LIVE %s %s %.8f @ %.4f (Gebühr %.4f %s)", side, symbol, filled, avg, fee_cost, self.quote)
+        log.info("LIVE %s %s %.8f @ %.4f (Gebühr %.4f %s)", side, symbol, filled, avg, fee_cost, self.quote_ccy)
         return Fill(filled, avg, fee_cost)
 
     def buy(self, symbol: str, qty: float) -> Fill:

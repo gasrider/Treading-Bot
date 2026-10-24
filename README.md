@@ -1,6 +1,6 @@
 # 🤖 Krypto-Trading-Bot
 
-Vollautomatischer Trading-Bot für Kryptowährungen (z. B. BTC/EUR, ETH/EUR). Er läuft **rund um die Uhr auf einem Cloud-Server**, kauft und verkauft selbstständig und schützt dein Kapital mit festen Risikoregeln.
+Vollautomatischer Trading-Bot für **Aktien, ETFs, Rohstoffe, Devisen und Kryptowährungen**. Er läuft **rund um die Uhr auf einem Cloud-Server**, bewertet alle Märkte laufend nach Trendstärke, berücksichtigt die Gesamtmarktlage, lässt jedes Kaufsignal optional von **Claude (KI)** prüfen und schützt dein Kapital mit festen Risikoregeln.
 Du steuerst ihn über ein **Web-Dashboard mit Passwort**, das du am Handy und am PC öffnen kannst.
 
 > ⚠️ **Bitte zuerst lesen:** Kein Bot garantiert Gewinne. Die meisten Privatanleger verlieren beim Trading Geld.
@@ -10,6 +10,7 @@ Du steuerst ihn über ein **Web-Dashboard mit Passwort**, das du am Handy und am
 ---
 
 ## Inhalt
+0. [Was der Bot kann – und was nicht](#0-was-der-bot-kann--und-was-nicht)
 1. [Schnellstart: Server in 15 Minuten](#1-schnellstart-server-in-15-minuten)
 2. [Das Dashboard](#2-das-dashboard)
 3. [Telegram-Benachrichtigungen](#3-telegram-benachrichtigungen-empfohlen)
@@ -22,6 +23,33 @@ Du steuerst ihn über ein **Web-Dashboard mit Passwort**, das du am Handy und am
 10. [Konfiguration anpassen](#10-konfiguration-anpassen)
 11. [Lokal auf dem PC (optional)](#11-lokal-auf-dem-pc-optional)
 12. [Fehlerbehebung](#12-fehlerbehebung)
+
+---
+
+## 0. Was der Bot kann – und was nicht
+
+**Kann:**
+- **35 Märkte** gleichzeitig beobachten (Liste anpassbar): US- und europäische Aktien inkl. Wiener Börse (OMV, Erste Group, Verbund), ETFs (S&P 500, MSCI World, DAX …), Rohstoffe (Gold, Silber, Öl, Erdgas, Kupfer), Devisen (EUR/USD, EUR/CHF …) und Krypto
+- alle Märkte stündlich nach **Trendstärke** ordnen und nur bei den stärksten kaufen (Marktscanner)
+- die **Gesamtmarktlage** (S&P 500, Volatilitätsindex VIX) erkennen und in unruhigen Phasen mit halbem oder gar keinem Risiko handeln
+- jedes Kaufsignal von **Claude** prüfen lassen und täglich eine **Marktanalyse mit aktuellen Nachrichten** schreiben (optional, API-Schlüssel nötig)
+- Handelszeiten und Wechselkurse berücksichtigen (USD, CHF … werden in Euro umgerechnet)
+
+**Kann nicht – und das kann kein Bot:**
+- den „besten Zeitpunkt“ vorhersagen. Kurzfristige Kursbewegungen sind weitgehend zufällig, auch für Profis und auch für KI.
+- Gewinne garantieren. Die KI kann sich irren; deshalb darf sie Käufe nur **verhindern**, nie auslösen, und ihre Trefferquote wird offen mitgemessen (KI-Bilanz).
+
+**Ehrliche Backtest-Zahlen** (echte Kursdaten der letzten ~2 Jahre, 32 Nicht-Krypto-Märkte, 1 % Risiko pro Trade, realistische Gebühren, `tradingbot backtest --alle`):
+
+| Kerzen | Märkte im Plus | Ø Rendite | Ø größter Rückgang |
+|---|---|---|---|
+| 1 Stunde | 8 von 32 | −1,9 % | −3,4 % |
+| **4 Stunden** | **21 von 32** | **+0,4 %** | **−2,4 %** |
+| 1 Tag | 17 von 32 | +0,2 % | −1,6 % |
+
+Mit 4-Stunden-Kerzen funktioniert die Strategie auf den meisten Märkten, die Gewinne sind aber klein. In derselben Zeit hätte „einfach kaufen und halten“ in diesem starken Börsenumfeld deutlich mehr gebracht. Der Bot ist auf **Kapitalschutz** ausgelegt: kleine Verluste, wenig Rückgang. **Empfehlung: Einstellungen → Kerzen-Intervall „4 Std“.**
+
+Aktien, ETFs, Rohstoffe und Devisen laufen **vorerst nur im Paper-Modus** (virtuelles Geld). Für echtes Geld bräuchte es einen Broker mit Programmierschnittstelle (z. B. Trading 212 oder Interactive Brokers) – das bauen wir, wenn die Paper-Ergebnisse überzeugen.
 
 ---
 
@@ -79,6 +107,8 @@ Unter `https://<deine-adresse>` meldest du dich mit Benutzer und Passwort an. Mi
 
 | Seite | Was du dort siehst und tun kannst |
 |---|---|
+| **Märkte** | Marktscanner: alle Märkte nach Stärke sortiert, filterbar nach Anlageklasse, mit Suche, Kaufbedingungen und Börsenstatus. Grün = unter den stärksten (nur dort wird gekauft). |
+| **KI** | Tägliche Marktanalyse mit Quellen, jede geprüfte Kaufentscheidung mit Begründung, **KI-Bilanz** (Wie wären die verhinderten Käufe ausgegangen?) und Kosten im Monat. |
 | **Übersicht** | Kapital, Gewinn heute, Gesamt-Rendite im Vergleich zu „Kaufen & Halten“, offener und realisierter Gewinn, größter Rückgang. **Märkte**: aktueller Kurs, Mini-Chart, Ampel der Kaufbedingungen und in Klartext, worauf der Bot gerade wartet. **Positionen**: Live-Gewinn, Abstand zu Stop und Ziel als Leiste, Hinweis „Gewinn gesichert“, Knopf zum Verkaufen. Dazu Kapitalverlauf und letzte Ereignisse. |
 | **Chart** | Interaktiver Kerzen-Chart (TradingView Lightweight Charts) mit Live-Kursen der Börse, Zoom und Verschieben, Intervallen 15 Min bis 1 Tag und den drei Linien der Strategie. Kauf- und Verkaufspfeile mit Ergebnis, Einstieg/Stop/Ziel als Linien, RSI-Fenster mit Kauf-Grenze, Fadenkreuz mit allen Werten. Daneben die Bot-Sicht und eine Erklärung der Regeln. |
 | **Trades** | Alle abgeschlossenen Trades, nach Paar filterbar. **CSV-Export** für Excel und die Steuer (Semikolon, Dezimalkomma). |
@@ -94,6 +124,21 @@ Unter `https://<deine-adresse>` meldest du dich mit Benutzer und Passwort an. Mi
 **Modus (paper/live) und Börse** lassen sich aus Sicherheitsgründen **nur am Server** ändern (`tradingbot config`). So kann niemand mit deinem Dashboard-Passwort auf echtes Geld umschalten.
 
 **Sicherheit:** Anmeldung per verschlüsseltem Sitzungs-Cookie (nur über HTTPS, für andere Webseiten unzugänglich). Nach 10 falschen Passwörtern wird die IP 15 Minuten gesperrt. Eine strenge Content-Security-Policy erlaubt nur eigenen Code, und das Dashboard sieht keine Börsen-Schlüssel. Wenn du das Passwort änderst, werden alle bestehenden Anmeldungen ungültig.
+
+---
+
+## 2a. KI (Claude) aktivieren
+
+1. Auf [console.anthropic.com](https://console.anthropic.com) anmelden, Guthaben aufladen (z. B. 10 $) und unter **API Keys** einen Schlüssel erstellen.
+2. Auf dem Server `tradingbot env` ausführen, `ANTHROPIC_API_KEY=` ausfüllen und speichern.
+3. Im Dashboard unter **Einstellungen → Scanner & KI** den Modus wählen:
+   - **Darf Käufe verhindern** (Standard): Claude prüft jedes Kaufsignal und kann es blockieren.
+   - **Nur Hinweise**: Claude kommentiert, der Bot entscheidet nach Regeln.
+   - **Aus**.
+
+**Kosten:** Modell Claude Opus 5.5, ca. 2–5 Cent pro geprüftem Kaufsignal und ca. 20–50 Cent pro Tagesanalyse mit Websuche. Ein **Monatsbudget** (Standard 20 $, in `config.yaml` unter `ai.monthly_budget_usd`) deckelt die Ausgaben; danach entscheiden die Regeln allein. Fällt die KI aus, entscheiden ebenfalls die Regeln.
+
+**Prüfe die KI-Bilanz regelmäßig:** Verhindert die KI vor allem Käufe, die Gewinne geworden wären, schadet sie mehr, als sie nützt. Dann stell auf „Nur Hinweise“ oder „Aus“.
 
 ---
 
@@ -121,7 +166,8 @@ Per SSH verbinden (`ssh root@<SERVER-IP>`), dann:
 | `tradingbot resume` | Handel nach Not-Aus/Notbremse wieder freigeben |
 | `tradingbot config` | Grundeinstellungen inkl. Modus/Börse bearbeiten (`config.yaml`), danach automatischer Neustart. Werte, die du im Dashboard gespeichert hast, haben Vorrang. |
 | `tradingbot env` | Passwörter und Schlüssel bearbeiten (`.env`), danach automatischer Neustart |
-| `tradingbot backtest` | Backtest direkt auf dem Server |
+| `tradingbot backtest` | Backtest direkt auf dem Server (Krypto) |
+| `docker compose run --rm bot python main.py backtest --alle` | Backtest über alle Märkte mit Rangliste |
 | `tradingbot update` | Neueste Version sofort holen (passiert sonst täglich automatisch) |
 | `tradingbot access` | Dashboard-Adresse und Zugangsdaten anzeigen |
 | `tradingbot pause` / `start` | Bot anhalten/fortsetzen (**ohne** Verkauf; dann gibt es keine Stop-Überwachung!) |
@@ -273,7 +319,11 @@ tradingbot/
   indicators.py          EMA, RSI, ATR
   risk.py                Positionsgröße, Tageslimit, Notbremse
   broker.py              Paper- und Live-Orderausführung
-  bot.py                 Dauerbetrieb, Not-Aus, Pause, Lebenszeichen, Ereignisse
+  bot.py                 Dauerbetrieb: alle Märkte, Scanner, Marktlage, KI-Prüfung, Not-Aus
+  markets.py             Katalog der Märkte (Ticker, Währung, Anlageklasse)
+  sources.py             Kursdaten: Krypto-Börse + Yahoo Finance (gebündelt, mit Cache)
+  scanner.py             Trendstärke-Ranking und Gesamtmarktlage (S&P 500, VIX)
+  ai.py                  Claude: Prüfung der Kaufsignale, Tagesanalyse, Budget, KI-Bilanz
   control.py             Steuerdateien zwischen Dashboard und Bot
   analytics.py           Kennzahlen (Profit-Faktor, Drawdown, Vergleich …)
   dashboard.py           Dashboard-Server: JSON-API, Anmeldung, Watchdog

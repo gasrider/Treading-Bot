@@ -57,7 +57,7 @@ def test_risk_guard_daily_limit_and_drawdown(cfg):
     guard.update(1000, day)
     assert guard.can_open(1000, 0)[0]
     assert not guard.can_open(960, 0)[0]          # -4 % am Tag > 3 % Limit
-    assert not guard.can_open(1000, 2)[0]         # max. 2 Positionen
+    assert not guard.can_open(1000, cfg["risk"]["max_open_positions"])[0]  # Positions-Limit
     guard.update(840, day)                        # -16 % vom Hoch
     assert state["halted"]
     assert not guard.can_open(2000, 0)[0]

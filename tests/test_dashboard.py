@@ -15,6 +15,8 @@ from tradingbot import control, dashboard
 from tradingbot.data import synthetic
 from tradingbot.state import StateStore
 from tests.test_bot import FakeExchange, patch_control
+from tests.test_multiasset import fake_yahoo_download
+from tradingbot.sources import YahooSource
 
 PASSWORD = "sehr-geheimes-passwort"
 SECRET = b"s" * 32
@@ -54,7 +56,8 @@ def env(cfg, tmp_path, monkeypatch):
     df.index = df.index - (df.index[-1] - pd.Timestamp.now(tz="UTC")) - pd.Timedelta(hours=1)
     fake = FakeExchange(df)
     fake.cursor = 800
-    charts = dashboard.ChartProvider(exchange_factory=lambda name: fake)
+    charts = dashboard.ChartProvider(exchange_factory=lambda name: fake,
+                                     yahoo=YahooSource(download=fake_yahoo_download))
     handler = dashboard.make_handler(lambda: cfg, store, "admin", PASSWORD, SECRET, charts)
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -172,7 +175,8 @@ def test_status_payload(env, cookie):
     assert a["today_pnl"] == 10.0 and a["total_pct"] == 1.0 and a["realized"] == 9.5
     assert a["benchmark_pct"] == pytest.approx(((61000 / 60000 - 1) + (198 / 180 - 1)) / 2 * 100, abs=0.01)
     assert a["risk_per_trade_eur"] == pytest.approx(10.1)
-    btc, eth = d["markets"]
+    by_sym = {m["symbol"]: m for m in d["markets"]}
+    btc, eth = by_sym["BTC/EUR"], by_sym["ETH/EUR"]
     assert btc["text"].startswith("Position offen")
     assert "Kein Aufwärtstrend" in eth["text"] and len(eth["spark"]) == 96
     assert d["stats"]["count"] == 1 and d["events"][0]["kind"] == "trade"
@@ -204,7 +208,7 @@ def test_trades_and_csv_export(env, cookie):
     status, raw, resp = call(env, "/api/trades.csv", cookie=cookie)
     text = raw.decode("utf-8")
     assert status == 200 and "attachment" in resp.getheader("Content-Disposition")
-    assert text.startswith("﻿") and "Paar;Menge" in text and "ETH/EUR;0,1;2000;2100;9,5;Take-Profit" in text
+    assert text.startswith("﻿") and "Markt;Klasse;Menge" in text and "ETH/EUR;Krypto;0,1;2000;2100;;9,5;Take-Profit" in text
 
 
 def test_logs_endpoint(env, cookie):
@@ -235,7 +239,8 @@ def settings_body(**changes):
             "strategy": {"ema_fast": 20, "ema_slow": 50, "ema_trend": 200, "rsi_max_entry": 70,
                          "stop_atr": 2, "take_profit_atr": 4, "trailing_atr": "2,5"},
             "risk": {"risk_per_trade": 0.005, "max_position_pct": 0.3, "max_open_positions": 3,
-                     "max_daily_loss": 0.03, "max_drawdown": 0.15}}
+                     "max_daily_loss": 0.03, "max_drawdown": 0.15},
+            "scanner": {"top_pct": 0.5}}
     for path, value in changes.items():
         sec, key = path.split(".")
         body[sec][key] = value
@@ -320,3 +325,55 @@ def test_watchdog_alerts_once_and_recovers(env):
     store.save(state)
     dog.check()
     assert "wieder" in rec.messages[-1]
+
+
+# ------------------------------------------------------------ Mehrere Anlageklassen & KI
+def test_status_contains_all_markets_regime_and_ai(env, cookie):
+    state = env["store"].load()
+    state["regime"] = {"state": "caution", "label": "Vorsicht", "text": "VIX 24", "multiplier": 0.5}
+    state["ai"] = {"status": {"available": True}, "decisions": [
+        {"t": iso(1), "symbol": "AAPL", "decision": "reject", "reason": "Zahlen morgen", "enforced": True,
+         "approve": False, "confidence": "hoch", "risks": [], "error": "", "cost_usd": 0.02}],
+        "shadow": [{"t": iso(1), "symbol": "AAPL", "entry": 100, "stop": 95, "tp": 110, "status": "wäre Verlust",
+                    "result_pct": -5.0, "reason": "x", "enforced": True}]}
+    env["store"].save(state)
+    d = call(env, "/api/status", cookie=cookie)[1]
+    classes = {m["asset_class"] for m in d["markets"]}
+    assert {"crypto", "stocks", "etfs", "commodities", "forex"} <= classes
+    assert d["regime"]["label"] == "Vorsicht"
+    assert d["ai"]["mode"] == "veto" and d["ai"]["available"] and d["ai"]["bilanz"]["would_lose"] == 1
+    assert d["ai"]["decisions"][0]["symbol"] == "AAPL" and d["asset_classes"]["commodities"] == "Rohstoffe"
+
+
+def test_chart_for_stock_uses_yahoo(env, cookie):
+    status, d, _ = call(env, "/api/chart?symbol=AAPL&tf=1h", cookie=cookie)
+    assert status == 200 and d["source"] == "yahoo" and len(d["candles"]) > 300
+    status, d, _ = call(env, "/api/chart?symbol=GC%3DF&tf=4h", cookie=cookie)
+    assert status == 200 and len(d["candles"]) > 50
+
+
+def test_settings_save_universe_and_ai_mode(env, cookie):
+    body = settings_body()
+    body["universe"] = {"stocks": ["aapl", "OMV.VI"], "commodities": ["GC=F"], "etfs": [], "forex": []}
+    body["ai"] = {"mode": "advisory"}
+    body["scanner"] = {"top_pct": 0.3}
+    status, d, _ = call(env, "/api/settings", "POST", body, cookie=cookie)
+    assert status == 200, d
+    saved = yaml.safe_load(config_module.SETTINGS_OVERRIDE.read_text())
+    assert saved["universe"]["stocks"] == ["AAPL", "OMV.VI"] and saved["ai"] == {"mode": "advisory"}
+    assert saved["scanner"]["top_pct"] == 0.3
+
+
+@pytest.mark.parametrize("universe, ai_mode, msg", [
+    ({"stocks": ["VOD.L"]}, None, "Ticker"),
+    ({"stocks": ["<b>"]}, None, "Ticker"),
+    (None, "allmächtig", "KI-Modus"),
+])
+def test_settings_rejects_bad_universe_or_ai(env, cookie, universe, ai_mode, msg):
+    body = settings_body()
+    if universe:
+        body["universe"] = universe
+    if ai_mode:
+        body["ai"] = {"mode": ai_mode}
+    status, d, _ = call(env, "/api/settings", "POST", body, cookie=cookie)
+    assert status == 400 and msg in d["error"]

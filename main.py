@@ -10,6 +10,7 @@
 import argparse
 import logging
 import shutil
+import time
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -17,10 +18,12 @@ from pathlib import Path
 from tradingbot.backtest import run_backtest
 from tradingbot.bot import TradingBot, status_text
 from tradingbot.broker import LiveBroker, PaperBroker
-from tradingbot.config import load_config
+from tradingbot.config import load_config, trading_costs
 from tradingbot.control import RESUME_FILE
 from tradingbot.data import fetch_history, make_exchange, synthetic
+from tradingbot.markets import build_universe
 from tradingbot.notifier import Notifier
+from tradingbot.sources import MarketData, YahooSource
 from tradingbot.state import StateStore
 
 
@@ -41,21 +44,49 @@ def state_path(cfg) -> str:
 def cmd_backtest(cfg, args):
     out = Path("results")
     out.mkdir(exist_ok=True)
-    symbols = ["SYNTHETISCH"] if args.synthetic else cfg["symbols"]
-    for symbol in symbols:
-        if args.synthetic:
-            df = synthetic(bars=8000)
-        else:
-            ex = make_exchange(cfg["backtest"]["data_exchange"])
-            print(f"Lade {cfg['backtest']['days']} Tage {symbol} {cfg['timeframe']} von {ex.id} ...")
-            df = fetch_history(ex, symbol, cfg["timeframe"], cfg["backtest"]["days"])
-        result = run_backtest(df, cfg)
-        print(f"\n===== Backtest {symbol} ({df.index[0]:%Y-%m-%d} bis {df.index[-1]:%Y-%m-%d}) =====")
-        for key, value in result.metrics.items():
-            print(f"  {key:<18} {value}")
-        name = symbol.replace("/", "-")
+    if args.synthetic:
+        instruments = {"SYNTHETISCH": None}
+    else:
+        instruments = build_universe(cfg, include_yahoo=args.alle)
+    yahoo = YahooSource()
+    summary = []
+    for symbol, inst in instruments.items():
+        try:
+            if inst is None:
+                df = synthetic(bars=8000)
+            elif inst.source == "yahoo":
+                print(f"Lade {symbol} ({inst.name}) {cfg['timeframe']} von Yahoo ...")
+                df = yahoo.history(symbol, cfg["timeframe"])
+                time.sleep(1)  # Yahoo schonen
+            else:
+                ex = make_exchange(cfg["backtest"]["data_exchange"])
+                print(f"Lade {cfg['backtest']['days']} Tage {symbol} {cfg['timeframe']} von {ex.id} ...")
+                df = fetch_history(ex, symbol, cfg["timeframe"], cfg["backtest"]["days"])
+        except Exception as e:
+            print(f"  {symbol}: keine Daten ({e})")
+            continue
+        if len(df) < 300:
+            print(f"  {symbol}: zu wenige Kerzen ({len(df)}) – übersprungen")
+            continue
+        costs = trading_costs(cfg, inst.asset_class, "backtest") if inst else None
+        result = run_backtest(df, cfg, costs)
+        m = result.metrics
+        summary.append((symbol, inst.class_label if inst else "-", m, df.index[0], df.index[-1]))
+        if not args.alle:
+            print(f"\n===== Backtest {symbol} ({df.index[0]:%Y-%m-%d} bis {df.index[-1]:%Y-%m-%d}) =====")
+            for key, value in m.items():
+                print(f"  {key:<18} {value}")
+        name = symbol.replace("/", "-").replace("=", "").replace("^", "")
         result.trades.to_csv(out / f"trades_{name}.csv", index=False)
         result.equity.to_csv(out / f"equity_{name}.csv")
+    if args.alle and summary:
+        print("\n===== Rangliste aller Märkte (nach Rendite) =====")
+        print(f"{'Markt':<10} {'Klasse':<10} {'Rendite %':>9} {'Halten %':>9} {'Max DD %':>9} {'Trades':>6} {'Treffer %':>9} {'PF':>5}")
+        for symbol, label, m, _, _ in sorted(summary, key=lambda r: -r[2].get("Rendite %", 0)):
+            print(f"{symbol:<10} {label:<10} {m.get('Rendite %', 0):>9} {m.get('Buy & Hold %', 0):>9} "
+                  f"{m.get('Max. Drawdown %', 0):>9} {m.get('Trades', 0):>6} {m.get('Trefferquote %', '-'):>9} "
+                  f"{m.get('Profit-Faktor', '-'):>5}")
+        print("Hinweis: Yahoo liefert Stundenkerzen nur für ca. 2 Jahre; Gebühren wie in config.yaml.")
     print(f"\nDetails (alle Trades, Kapitalkurve) in: {out.resolve()}")
 
 
@@ -75,7 +106,10 @@ def cmd_run(cfg, args):
         exchange = make_exchange(cfg["exchange"])
         p = cfg["paper"]
         broker = PaperBroker(exchange, state, p["starting_balance"], p["fee"], p["slippage"])
-    bot = TradingBot(cfg, exchange, broker, store, notifier, state, config_path=args.config)
+    # Aktien, ETFs, Rohstoffe, Devisen (Yahoo) vorerst nur im Paper-Modus
+    yahoo = YahooSource() if cfg["mode"] == "paper" else None
+    market = MarketData(exchange, yahoo, cfg["quote"])
+    bot = TradingBot(cfg, exchange, broker, store, notifier, state, config_path=args.config, market=market)
     try:
         bot.run()
     except KeyboardInterrupt:
@@ -106,6 +140,7 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     bt = sub.add_parser("backtest")
     bt.add_argument("--synthetic", action="store_true", help="künstliche Daten statt Börsendaten")
+    bt.add_argument("--alle", action="store_true", help="alle Märkte testen (Aktien, ETFs, Rohstoffe, Devisen, Krypto)")
     sub.add_parser("run")
     sub.add_parser("status")
     sub.add_parser("reset-halt")

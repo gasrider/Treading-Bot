@@ -20,9 +20,10 @@ class BacktestResult:
     metrics: dict = field(default_factory=dict)
 
 
-def run_backtest(df: pd.DataFrame, cfg: dict) -> BacktestResult:
+def run_backtest(df: pd.DataFrame, cfg: dict, costs: tuple[float, float] | None = None) -> BacktestResult:
+    """costs = (Gebühr, Slippage) pro Order; Standard aus dem Abschnitt backtest."""
     params, risk_cfg, bt = cfg["strategy"], cfg["risk"], cfg["backtest"]
-    fee, slip = bt["fee"], bt["slippage"]
+    fee, slip = costs or (bt["fee"], bt["slippage"])
     data = add_indicators(df, params)
     guard = RiskGuard(risk_cfg, {})
     cash = float(bt["starting_balance"])

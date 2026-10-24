@@ -16,6 +16,13 @@ fi
 
 git pull -q --ff-only origin "$BRANCH"
 echo "Neue Version: $(git log -1 --format='%h %s')"
+
+# Neue Einträge aus .env.example (leer) ergänzen – bestehende Werte bleiben unverändert
+if [ -f .env ]; then
+    grep -E '^[A-Z_]+=' .env.example | cut -d= -f1 | while read -r key; do
+        grep -q "^${key}=" .env || { printf '%s=\n' "$key" >> .env; echo "In .env ergänzt: ${key}="; }
+    done
+fi
 docker compose up -d --build
 docker image prune -f >/dev/null
 echo "Update abgeschlossen."

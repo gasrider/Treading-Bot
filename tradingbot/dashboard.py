@@ -34,9 +34,12 @@ import yaml
 
 from . import config as config_module
 from . import control
+from .ai import AIAnalyst
 from .analytics import benchmark_return, max_drawdown, trade_stats
-from .config import EDITABLE, TIMEFRAMES, apply_overrides, load_config, validate
+from .config import AI_MODES, EDITABLE, TIMEFRAMES, UNIVERSE_CLASSES, apply_overrides, load_config, validate
 from .data import make_exchange, to_frame
+from .markets import ASSET_CLASSES, Instrument, build_universe, valid_yahoo_ticker
+from .sources import YahooSource
 from .notifier import Notifier
 from .state import StateStore
 from .strategy import add_indicators
@@ -69,7 +72,9 @@ HELP = {
     "max_open_positions": "Wie viele Paare gleichzeitig gehalten werden dürfen.",
     "max_daily_loss": "Fällt das Kapital an einem Tag um so viel, kauft der Bot bis morgen nichts mehr.",
     "max_drawdown": "Notbremse: Fällt das Kapital so weit unter den Höchststand, verkauft der Bot alles und stoppt.",
+    "top_pct": "Der Scanner ordnet alle Märkte nach Trendstärke. Kaufsignale werden nur bei den stärksten angenommen.",
 }
+AI_MODE_LABELS = {"off": "Aus", "advisory": "Nur Hinweise", "veto": "Darf Käufe verhindern"}
 
 
 # ---------------------------------------------------------------- Zustand
@@ -140,8 +145,8 @@ def status_payload(cfg: dict, state: dict) -> dict:
     start_equity = (benchmark or {}).get("equity") or (history[0][1] if history else None)
     positions = []
     for sym, p in state.get("positions", {}).items():
-        price = prices.get(sym, p["entry"])
-        value = p["qty"] * price
+        price = prices.get(sym, p.get("last_price", p["entry"]))
+        value = p["qty"] * price * p.get("last_fx", p.get("fx_entry", 1.0))
         upnl = value - p["cost"]
         span = (p["tp"] - p["stop"]) if p.get("tp") else None
         positions.append({
@@ -151,13 +156,18 @@ def status_payload(cfg: dict, state: dict) -> dict:
             "stop_dist_pct": round((p["stop"] / price - 1) * 100, 2),
             "tp_dist_pct": round((p["tp"] / price - 1) * 100, 2) if p.get("tp") else None,
             "progress": max(0.0, min(1.0, (price - p["stop"]) / span)) if span else None,
-            "opened_at": p["opened_at"],
+            "opened_at": p["opened_at"], "currency": p.get("currency", cfg["quote"]),
+            "asset_class": p.get("asset_class", "crypto"), "name": p.get("name", sym),
+            "pending_exit": p.get("pending_exit"),
         })
+    universe = build_universe(cfg, include_yahoo=cfg["mode"] == "paper")
     markets = []
-    for sym in cfg["symbols"] + [s for s in market if s not in cfg["symbols"]]:
+    for sym in list(universe) + [s for s in market if s not in universe]:
         m = market.get(sym)
+        inst = universe.get(sym) or Instrument(sym, (m or {}).get("asset_class", "crypto"), "", (m or {}).get("currency", ""), False)
         if not m or not m.get("candles"):
-            markets.append({"symbol": sym, "pending": True, "error": (m or {}).get("error", "")})
+            markets.append({"symbol": sym, "pending": True, "error": (m or {}).get("error", ""), "name": inst.name,
+                            "asset_class": inst.asset_class, "currency": inst.currency})
             continue
         tone, text = market_status(m, state.get("positions", {}).get(sym), cfg["strategy"])
         closes = [c[4] for c in m["candles"]]
@@ -167,7 +177,9 @@ def status_payload(cfg: dict, state: dict) -> dict:
             "change_span_hours": len(closes) * TF_SECONDS.get(m.get("timeframe", "1h"), 3600) / 3600,
             "spark": closes, "uptrend": m.get("uptrend"), "fast_above_slow": m.get("fast_above_slow"),
             "rsi_ok": m.get("rsi_ok"), "entry_signal": m.get("entry_signal"), "tone": tone, "text": text,
-            "updated": m.get("updated"), "error": m.get("error", ""),
+            "updated": m.get("updated"), "error": m.get("error", ""), "name": m.get("name", inst.name),
+            "asset_class": m.get("asset_class", inst.asset_class), "currency": m.get("currency", inst.currency),
+            "open": m.get("open", True), "score": m.get("score"), "rank": m.get("rank"),
         })
     trades = state.get("closed_trades", [])
     upnl_total = sum(p["upnl"] for p in positions)
@@ -198,7 +210,22 @@ def status_payload(cfg: dict, state: dict) -> dict:
         "stats": trade_stats(trades),
         "equity_history": history[-24 * 90:],
         "events": state.get("events", [])[-60:][::-1],
+        "regime": state.get("regime"),
+        "ai": ai_payload(cfg, state),
+        "data_error": state.get("data_error", ""),
+        "asset_classes": ASSET_CLASSES,
+        "scanner": cfg.get("scanner", {}),
     }
+
+
+def ai_payload(cfg: dict, state: dict) -> dict:
+    """KI-Bereich aus der State-Datei (das Dashboard selbst ruft die KI nie auf)."""
+    snapshot = json.loads(json.dumps(state.get("ai", {})))  # nichts am Original ändern
+    summary = AIAnalyst(cfg.get("ai"), "", {"ai": snapshot}).summary()
+    status = snapshot.get("status") or {}
+    summary["available"] = bool(status.get("available"))
+    summary["mode_label"] = AI_MODE_LABELS.get(summary["mode"], summary["mode"])
+    return summary
 
 
 def tail(path: Path, lines: int = 200) -> list[str]:
@@ -213,13 +240,20 @@ class ChartProvider:
     """Holt Kerzen über die öffentliche Börsen-API (mit kurzem Cache) und berechnet die
     Indikatoren mit genau derselben Funktion wie der Bot."""
 
-    def __init__(self, exchange_factory=make_exchange):
+    def __init__(self, exchange_factory=make_exchange, yahoo: YahooSource | None = None):
         self.exchange_factory = exchange_factory
+        self.yahoo = yahoo or YahooSource(candle_ttl=CHART_CACHE_SECONDS * 3)
         self.exchanges = {}
         self.cache = {}
         self.lock = threading.Lock()
 
     def _candles(self, exchange_id: str, symbol: str, tf: str) -> pd.DataFrame:
+        if "/" not in symbol:  # Aktie, ETF, Rohstoff, Devise -> Yahoo
+            self.yahoo.refresh([symbol], tf)
+            df = self.yahoo.all_candles(symbol, tf)
+            if df.empty:
+                raise LookupError(self.yahoo.last_error or f"Keine Kursdaten für {symbol}")
+            return df.iloc[-720:]
         key = (exchange_id, symbol, tf)
         with self.lock:
             hit = self.cache.get(key)
@@ -272,8 +306,10 @@ class ChartProvider:
         if pos and (bt := bar_time(pos["opened_at"])) is not None:
             markers.append({"time": bt, "position": "belowBar", "color": "#2563eb", "shape": "arrowUp", "text": "Offen"})
         markers.sort(key=lambda m: m["time"])
+        snap = state.get("market", {}).get(symbol, {})
         return {
-            "symbol": symbol, "timeframe": tf, "source": source,
+            "symbol": symbol, "timeframe": tf, "source": source if "/" in symbol or source == "snapshot" else "yahoo",
+            "name": snap.get("name", symbol), "currency": snap.get("currency", ""),
             "candles": [{"time": t, "open": float(o), "high": float(h), "low": float(lo), "close": float(c)}
                         for t, o, h, lo, c in zip(times, data["open"], data["high"], data["low"], data["close"])],
             "ema_fast": series("ema_fast"), "ema_slow": series("ema_slow"), "ema_trend": series("ema_trend"),
@@ -292,6 +328,9 @@ def settings_payload(cfg: dict, equity: float | None) -> dict:
         for sec, key, label, typ, lo, hi, pct in EDITABLE
     ]
     return {
+        "universe": {c: list((cfg.get("universe") or {}).get(c) or []) for c in UNIVERSE_CLASSES},
+        "asset_classes": {c: ASSET_CLASSES[c] for c in UNIVERSE_CLASSES},
+        "ai_mode": (cfg.get("ai") or {}).get("mode", "off"), "ai_modes": AI_MODE_LABELS,
         "symbols": cfg["symbols"], "timeframe": cfg["timeframe"], "timeframes": list(TIMEFRAMES),
         "pairs": list(dict.fromkeys([f"{b}/{cfg['quote']}" for b in COMMON_PAIRS] + cfg["symbols"])),
         "quote": cfg["quote"], "mode": cfg["mode"], "exchange": cfg["exchange"], "fields": fields,
@@ -308,7 +347,23 @@ def parse_settings_json(body: dict) -> dict:
             raise ValueError(f"Ungültiges Paar „{str(raw)[:20]}“ – Format z. B. ATOM/EUR")
         symbols.append(sym)
     overrides = {"symbols": list(dict.fromkeys(symbols)), "timeframe": str(body.get("timeframe", "")),
-                 "strategy": {}, "risk": {}}
+                 "strategy": {}, "risk": {}, "scanner": {}}
+    if isinstance(body.get("universe"), dict):
+        universe = {}
+        for asset_class in UNIVERSE_CLASSES:
+            tickers = []
+            for raw in body["universe"].get(asset_class) or []:
+                t = str(raw).strip().upper()
+                if not valid_yahoo_ticker(t):
+                    raise ValueError(f"Ungültiger oder nicht unterstützter Ticker „{str(raw)[:20]}“")
+                tickers.append(t)
+            universe[asset_class] = list(dict.fromkeys(tickers))
+        overrides["universe"] = universe
+    mode = (body.get("ai") or {}).get("mode")
+    if mode is not None:
+        if mode not in AI_MODES:
+            raise ValueError("Unbekannter KI-Modus")
+        overrides["ai"] = {"mode": mode}
     for section, key, label, typ, *_ in EDITABLE:
         raw = (body.get(section) or {}).get(key)
         try:
@@ -334,12 +389,13 @@ def trades_csv(trades: list[dict]) -> bytes:
     """Excel-freundlich für den deutschsprachigen Raum: Semikolon, Dezimalkomma, UTF-8 mit BOM."""
     out = io.StringIO()
     writer = csv.writer(out, delimiter=";")
-    writer.writerow(["Eröffnet (UTC)", "Geschlossen (UTC)", "Paar", "Menge", "Kaufkurs", "Verkaufskurs",
-                     "Ergebnis", "Grund"])
+    writer.writerow(["Eröffnet (UTC)", "Geschlossen (UTC)", "Markt", "Klasse", "Menge", "Kaufkurs", "Verkaufskurs",
+                     "Kurs-Währung", "Ergebnis (Konto-Währung)", "Grund"])
     for t in trades:
         writer.writerow([t.get("opened_at", "")[:19].replace("T", " "), t.get("closed_at", "")[:19].replace("T", " "),
-                         t["symbol"], *(str(t[k]).replace(".", ",") for k in ("qty", "entry", "exit", "pnl")),
-                         t["reason"]])
+                         t["symbol"], ASSET_CLASSES.get(t.get("asset_class", "crypto"), ""),
+                         *(str(t[k]).replace(".", ",") for k in ("qty", "entry", "exit")),
+                         t.get("currency", ""), str(t["pnl"]).replace(".", ","), t["reason"]])
     return ("﻿" + out.getvalue()).encode("utf-8")
 
 
@@ -555,7 +611,7 @@ def make_handler(cfg_loader, store: StateStore, user: str, password: str, secret
             elif path == "/api/chart":
                 symbol = query.get("symbol", [cfg["symbols"][0]])[0].upper()
                 tf = query.get("tf", [cfg["timeframe"]])[0]
-                if not SYMBOL_RE.match(symbol) or tf not in TIMEFRAMES:
+                if not (SYMBOL_RE.match(symbol) or valid_yahoo_ticker(symbol)) or tf not in TIMEFRAMES:
                     self.error(400, "Ungültiges Paar oder Intervall")
                     return
                 try:

@@ -10,7 +10,9 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 const VIEWS = [
   { id: "overview", label: "Übersicht", icon: "M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z" },
+  { id: "markets", label: "Märkte", icon: "M3 12h4l3-8 4 16 3-8h4", stroke: true },
   { id: "chart", label: "Chart", icon: "M3 3v18h18M7 15l4-4 3 3 5-6" , stroke: true },
+  { id: "ai", label: "KI", icon: "M9 3a3 3 0 0 0-3 3v.5A3 3 0 0 0 4 12a3 3 0 0 0 2 5.5V18a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM15 3a3 3 0 0 1 3 3v.5a3 3 0 0 1 2 5.5 3 3 0 0 1-2 5.5V18a3 3 0 0 1-6 0", stroke: true },
   { id: "trades", label: "Trades", icon: "M4 6h16M4 12h16M4 18h10", stroke: true },
   { id: "stats", label: "Statistik", icon: "M5 20V10M12 20V4M19 20v-7", stroke: true },
   { id: "settings", label: "Einstellungen", icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z", stroke: true },
@@ -39,7 +41,7 @@ const PRESETS = [
 const S = {
   status: null, view: "overview", quote: "EUR",
   chart: { symbol: null, tf: null, toggles: { ema: true, rsi: true, markers: true }, data: null, objs: null, firstLoad: true },
-  trades: null, tradeFilter: "", settings: null, draft: null, dirty: false,
+  trades: null, tradeFilter: "", settings: null, draft: null, dirty: false, marketClass: "all", marketQuery: "",
   eventFilter: "all", overviewChart: null, statsCharts: null, timers: {},
 };
 
@@ -47,6 +49,7 @@ const S = {
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const nf = (d) => new Intl.NumberFormat("de-AT", { minimumFractionDigits: d, maximumFractionDigits: d });
 const cur = () => (S.quote === "EUR" ? "€" : S.quote);
+const ccy = (c) => (c === "EUR" ? "€" : c === "USD" ? "$" : c || "");
 const money = (v, signed = false) => v == null ? "–" : (signed && v > 0 ? "+" : "") + nf(2).format(v) + " " + cur();
 const pct = (v, signed = true, d = 2) => v == null ? "–" : (signed && v > 0 ? "+" : "") + nf(d).format(v) + " %";
 const priceDigits = (v) => { const a = Math.abs(v); return a >= 100 ? 2 : a >= 1 ? 3 : a >= 0.01 ? 5 : 8; };
@@ -183,6 +186,8 @@ function go(view) {
   if (view === "trades" || view === "stats") loadTrades();
   if (view === "settings") loadSettings();
   if (view === "log") { renderLog(); loadLogs(); }
+  if (view === "markets") renderMarkets();
+  if (view === "ai") renderAI();
   if (view === "overview" && S.status) renderOverview();
 }
 
@@ -195,6 +200,8 @@ async function refreshStatus() {
     renderTopbar();
     if (S.view === "overview") renderOverview();
     if (S.view === "log") renderLog();
+    if (S.view === "markets" && document.activeElement?.id !== "market-search") renderMarkets();
+    if (S.view === "ai") renderAI();
     if (S.view === "chart") renderChartSide();
     if (S.view === "stats" && S.trades) renderStats();
   } catch (e) {
@@ -295,6 +302,33 @@ function kpi(label, value, sub = "", valueCls = "", hint = "") {
     <div class="kpi-value ${valueCls}">${value}</div><div class="kpi-sub">${sub}</div></div>`;
 }
 
+function regimeCard(st) {
+  const r = st.regime;
+  if (!r) return "";
+  const tone = { risk_on: "ok", caution: "warn", risk_off: "bad" }[r.state] || "muted";
+  return `<div class="card regime tone-${tone}"><div class="card-head"><h2>Marktlage</h2>
+      <span class="badge regime-${esc(r.state)}">${esc(r.label)}</span></div>
+    <div class="status-line tone-${tone}"><span class="dot"></span><span>${esc(r.text)}</span></div>
+    <p class="muted small">Grundlage: S&amp;P 500 gegenüber seiner 200-Tage-Linie und Volatilitätsindex VIX. Bestimmt, mit wie viel Risiko neue Käufe eröffnet werden.</p></div>`;
+}
+
+function aiCard(st) {
+  const ai = st.ai;
+  if (!ai) return "";
+  const b = ai.bilanz;
+  let body;
+  if (ai.mode === "off") body = '<p class="muted">KI ist ausgeschaltet (Einstellungen → KI).</p>';
+  else if (!ai.available) body = '<p class="muted">KI aktiv, aber kein API-Schlüssel hinterlegt – es entscheiden die Regeln allein. Anleitung: Seite „KI“.</p>';
+  else {
+    const last = ai.decisions[0];
+    body = `${last ? `<div class="status-line ${last.decision === "reject" ? "tone-bad" : "tone-ok"}"><span class="dot"></span>
+        <span><b>${esc(last.symbol)}</b>: ${last.decision === "reject" ? "Kauf verhindert" : last.decision === "approve" ? "genehmigt" : "nicht geprüft"} – ${esc(last.reason)}</span></div>` : '<p class="muted">Noch keine Kaufsignale geprüft.</p>'}
+      <p class="small muted">KI-Bilanz: ${b.rejected} Käufe verhindert · davon wären ${b.would_lose} Verluste und ${b.would_win} Gewinne gewesen · Kosten diesen Monat ${nf(2).format(ai.cost.usd)} $ von ${nf(0).format(ai.budget_usd)} $</p>`;
+  }
+  return `<div class="card"><div class="card-head"><h2>KI-Risikomanager</h2><span class="badge badge-ai">${esc(ai.mode_label)}</span></div>
+    ${body}<a href="#/ai" data-go="ai">Zur KI-Seite</a></div>`;
+}
+
 function renderOverview() {
   const st = S.status;
   if (!st) return;
@@ -305,48 +339,35 @@ function renderOverview() {
     kpi("Kapital", money(a.equity), a.cash != null ? `davon frei ${money(a.cash)}` : ""),
     kpi("Heute", money(a.today_pnl, true), pct(a.today_pct), cls(a.today_pnl), "Veränderung seit Tagesbeginn (UTC)"),
     kpi("Gesamt-Rendite", pct(a.total_pct), vsBench, cls(a.total_pct),
-      "Seit Start des Bots. Vergleich: alle Paare beim Start gekauft und gehalten."),
-    kpi("Offene Positionen", money(a.unrealized, true), `${st.positions.length} offen`, cls(a.unrealized), "Nicht realisierter Gewinn/Verlust"),
+      "Seit Start des Bots. Vergleich: alle Märkte beim Start gekauft und gehalten."),
+    kpi("Offene Positionen", money(a.unrealized, true), `${st.positions.length} offen`, cls(a.unrealized), "Nicht realisierter Gewinn/Verlust in Euro"),
     kpi("Realisiert", money(a.realized, true), s.count ? `${s.count} Trades · ${nf(0).format(s.win_rate)} % Treffer` : "noch keine Trades", cls(a.realized)),
     kpi("Max. Drawdown", pct(a.max_dd_pct, false), `Notbremse bei −${nf(0).format(st.risk.max_drawdown * 100)} %`,
       "", "Größter Rückgang vom Höchststand"),
   ].join("");
 
-  const markets = st.markets.map((m) => {
-    if (m.pending) {
-      return `<div class="market"><div class="market-top"><span class="market-sym">${esc(m.symbol)}</span></div>
-        <div class="status-line ${m.error ? "tone-bad" : "tone-muted"}"><span class="dot"></span><span>${esc(m.error ? "Fehler: " + m.error : "Wartet auf erste Daten vom Bot …")}</span></div></div>`;
-    }
-    const chips = [
-      [m.uptrend, `Kurs > EMA ${st.strategy.ema_trend}`],
-      [m.fast_above_slow, `EMA ${st.strategy.ema_fast} > EMA ${st.strategy.ema_slow}`],
-      [m.rsi_ok, `RSI ${m.rsi != null ? nf(0).format(m.rsi) : "–"} < ${st.strategy.rsi_max_entry}`],
-    ].map(([ok, t]) => `<span class="chip ${ok ? "chip-ok" : ""}">${ok ? "✓" : "✗"} ${esc(t)}</span>`).join("");
-    const span = m.change_span_hours >= 48 ? `${nf(0).format(m.change_span_hours / 24)} T` : `${nf(0).format(m.change_span_hours)} Std`;
-    return `<div class="market" data-symbol="${esc(m.symbol)}" role="button" tabindex="0" title="Im Chart öffnen">
-      <div class="market-top"><span class="market-sym">${esc(m.symbol)}</span>
-        <span><span class="market-price price">${price(m.price)}</span> <span class="${cls(m.change_pct)} small">${pct(m.change_pct)}</span> <span class="muted small">${span}</span></span></div>
-      ${sparkSvg(m.spark)}
-      <div class="status-line tone-${esc(m.tone)}"><span class="dot"></span><span>${esc(m.text)}</span></div>
-      <div class="chips">${chips}</div></div>`;
-  }).join("") || '<div class="empty">Keine Paare konfiguriert.</div>';
+  const ranked = st.markets.filter((m) => !m.pending && m.score != null).sort((x, y) => y.score - x.score);
+  const top = ranked.slice(0, 6).map(marketCard).join("") || '<div class="empty">Die Rangliste erscheint, sobald der Bot alle Märkte ausgewertet hat (wenige Minuten).</div>';
 
   const positions = st.positions.map((p) => `<div class="position">
-      <div class="position-top"><div><b>${esc(p.symbol)}</b> <span class="muted small">seit ${localTime(p.opened_at)}</span>
-        ${p.stop >= p.entry ? `<span class="chip chip-ok" title="Der Stop liegt über dem Einstieg">${ICONS.shield} Gewinn gesichert</span>` : ""}</div>
+      <div class="position-top"><div><b>${esc(p.name !== p.symbol ? p.name : p.symbol)}</b> <span class="muted small">${esc(p.symbol)} · ${esc(st.asset_classes[p.asset_class] || "")} · seit ${localTime(p.opened_at)}</span>
+        ${p.stop >= p.entry ? `<span class="chip chip-ok" title="Der Stop liegt über dem Einstieg">${ICONS.shield} Gewinn gesichert</span>` : ""}
+        ${p.pending_exit ? `<span class="chip">Verkauf bei Marktöffnung (${esc(p.pending_exit)})</span>` : ""}</div>
         <div><span class="${cls(p.upnl)}"><b>${money(p.upnl, true)}</b> (${pct(p.upnl_pct)})</span>
         <button class="btn btn-secondary btn-sm" data-close="${esc(p.symbol)}" type="button">Verkaufen</button></div></div>
       <div class="position-meta muted">
-        <span>Kurs<b>${price(p.price)}</b></span><span>Menge<b>${qty(p.qty)}</b></span><span>Wert<b>${money(p.value)}</b></span>
+        <span>Kurs<b>${price(p.price)} ${esc(ccy(p.currency))}</b></span><span>Menge<b>${qty(p.qty)}</b></span><span>Wert<b>${money(p.value)}</b></span>
         <span>Abstand Stop<b class="neg">${pct(p.stop_dist_pct)}</b></span>${p.tp_dist_pct != null ? `<span>Abstand Ziel<b class="pos">${pct(p.tp_dist_pct)}</b></span>` : ""}
       </div>${rangeSvg(p)}</div>`).join("") || '<div class="empty">Keine offenen Positionen – der Bot wartet auf ein Kaufsignal.</div>';
 
   const events = st.events.slice(0, 8).map(eventRow).join("") || '<div class="empty">Noch keine Ereignisse.</div>';
+  const dataWarn = st.data_error ? `<div class="banner banner-warn">${esc(st.data_error)}</div>` : "";
 
   const view = $("#view-overview");
-  view.innerHTML = `<div class="kpis">${kpis}</div>
-    <div class="card"><div class="card-head"><h2>Märkte – was der Bot gerade sieht</h2>
-      <span class="muted small">Klick öffnet den Chart</span></div><div class="markets">${markets}</div></div>
+  view.innerHTML = `${dataWarn}<div class="kpis">${kpis}</div>
+    <div class="grid-2">${regimeCard(st)}${aiCard(st)}</div>
+    <div class="card spaced-top"><div class="card-head"><h2>Stärkste Märkte gerade</h2>
+      <a href="#/markets" data-go="markets">Alle ${st.markets.length} Märkte</a></div><div class="markets">${top}</div></div>
     <div class="card"><div class="card-head"><h2>Offene Positionen</h2>
       <span class="muted small">Risiko pro Trade: ${money(st.account.risk_per_trade_eur)}</span></div><div class="positions">${positions}</div></div>
     <div class="grid-2">
@@ -355,15 +376,139 @@ function renderOverview() {
       <div class="card"><div class="card-head"><h2>Letzte Ereignisse</h2><a href="#/log" data-go="log">Alle anzeigen</a></div>
         <div class="events">${events}</div></div>
     </div>`;
-  $$(".market[data-symbol]", view).forEach((el) => {
-    const open = () => { S.chart.symbol = el.dataset.symbol; S.chart.firstLoad = true; go("chart"); };
-    el.addEventListener("click", open);
-    el.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
-  });
+  bindMarketClicks(view);
   $$("[data-close]", view).forEach((b) => b.addEventListener("click", () => closePosition(b.dataset.close)));
   $$("[data-go]", view).forEach((a2) => a2.addEventListener("click", (e) => { e.preventDefault(); go(a2.dataset.go); }));
   dropChart(S.overviewChart);
   S.overviewChart = equityChart($("#overview-equity"), st.equity_history);
+}
+
+function marketChips(m, st) {
+  return [
+    [m.uptrend, `Trend ✓ (EMA ${st.strategy.ema_trend})`, `kein Trend (EMA ${st.strategy.ema_trend})`],
+    [m.fast_above_slow, `EMA ${st.strategy.ema_fast} > ${st.strategy.ema_slow}`, `EMA ${st.strategy.ema_fast} < ${st.strategy.ema_slow}`],
+    [m.rsi_ok, `RSI ${m.rsi != null ? nf(0).format(m.rsi) : "–"}`, `RSI ${m.rsi != null ? nf(0).format(m.rsi) : "–"} hoch`],
+  ].map(([ok, yes, no]) => `<span class="chip ${ok ? "chip-ok" : ""}">${ok ? "✓" : "✗"} ${esc(ok ? yes.replace(" ✓", "") : no)}</span>`).join("");
+}
+
+function marketCard(m) {
+  const st = S.status;
+  const span = m.change_span_hours >= 48 ? `${nf(0).format(m.change_span_hours / 24)} T` : `${nf(0).format(m.change_span_hours)} Std`;
+  return `<div class="market" data-symbol="${esc(m.symbol)}" role="button" tabindex="0" title="Im Chart öffnen">
+    <div class="market-top"><span><span class="market-sym">${esc(m.name)}</span> <span class="muted small">${esc(m.symbol)}</span></span>
+      <span>${m.open === false ? '<span class="chip">geschlossen</span>' : ""}</span></div>
+    <div class="market-top"><span class="muted small">${esc(st.asset_classes[m.asset_class] || "")} · Stärke ${m.score != null ? nf(2).format(m.score) : "–"}</span>
+      <span><span class="market-price price">${price(m.price)}</span> <span class="muted small">${esc(ccy(m.currency))}</span> <span class="${cls(m.change_pct)} small">${pct(m.change_pct)}</span> <span class="muted small">${span}</span></span></div>
+    ${sparkSvg(m.spark)}
+    <div class="status-line tone-${esc(m.tone)}"><span class="dot"></span><span>${esc(m.text)}</span></div>
+    <div class="chips">${marketChips(m, st)}</div></div>`;
+}
+
+function bindMarketClicks(root) {
+  $$("[data-symbol]", root).forEach((el) => {
+    const open = () => { S.chart.symbol = el.dataset.symbol; S.chart.firstLoad = true; go("chart"); };
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
+  });
+}
+
+// ------------------------------------------------------------ Märkte (Scanner)
+function renderMarkets() {
+  const st = S.status;
+  if (!st) return;
+  const classes = [["all", "Alle"], ...Object.entries(st.asset_classes)];
+  const q = (S.marketQuery || "").toLowerCase();
+  const rows = st.markets
+    .filter((m) => S.marketClass === "all" || m.asset_class === S.marketClass)
+    .filter((m) => !q || m.symbol.toLowerCase().includes(q) || (m.name || "").toLowerCase().includes(q))
+    .sort((x, y) => (y.score ?? -99) - (x.score ?? -99));
+  const counts = Object.fromEntries(classes.map(([k]) => [k, k === "all" ? st.markets.length : st.markets.filter((m) => m.asset_class === k).length]));
+  const top = st.scanner?.top_pct ?? 1;
+  const body = rows.map((m) => {
+    if (m.pending) {
+      return `<tr data-symbol="${esc(m.symbol)}"><td><b>${esc(m.name)}</b><div class="muted small">${esc(m.symbol)}</div></td>
+        <td class="hide-sm">${esc(st.asset_classes[m.asset_class] || "")}</td><td colspan="5" class="muted">${esc(m.error || "Wartet auf Daten …")}</td></tr>`;
+    }
+    const eligible = m.rank != null && m.rank >= 1 - top;
+    return `<tr data-symbol="${esc(m.symbol)}" class="clickable">
+      <td><b>${esc(m.name)}</b><div class="muted small">${esc(m.symbol)}</div></td>
+      <td class="hide-sm">${esc(st.asset_classes[m.asset_class] || "")}</td>
+      <td class="r">${price(m.price)} <span class="muted small">${esc(ccy(m.currency))}</span></td>
+      <td class="r ${cls(m.change_pct)}">${pct(m.change_pct)}</td>
+      <td class="r"><span class="rankbar" title="Platz im Ranking (100 % = stärkster Markt)"><svg width="60" height="8" viewBox="0 0 60 8" preserveAspectRatio="none" aria-hidden="true"><rect width="60" height="8" rx="4" fill="var(--border)"/><rect width="${Math.round((m.rank ?? 0) * 60)}" height="8" rx="4" fill="${eligible ? "var(--ok)" : "var(--muted)"}"/></svg></span>
+        <span class="hide-sm">${m.score != null ? nf(2).format(m.score) : "–"}</span></td>
+      <td class="hide-sm"><div class="chips nowrap" title="Trend über EMA ${st.strategy.ema_trend} · EMA ${st.strategy.ema_fast} über ${st.strategy.ema_slow} · RSI unter ${st.strategy.rsi_max_entry}">${[[m.uptrend, "Trend"], [m.fast_above_slow, "Kreuz"], [m.rsi_ok, `RSI ${m.rsi != null ? nf(0).format(m.rsi) : "–"}`]]
+        .map(([ok, t]) => `<span class="chip ${ok ? "chip-ok" : ""}">${ok ? "✓" : "✗"} ${esc(t)}</span>`).join("")}</div></td>
+      <td class="status-cell hide-sm tone-${esc(m.tone)}"><span class="dot"></span>${esc(m.entry_signal ? "Kaufsignal" : m.tone === "ok" ? "Position offen" : m.uptrend ? (m.fast_above_slow ? "Trend läuft" : "wartet auf Signal") : "kein Trend")}
+        <div class="muted small">${m.open === false ? "Börse geschlossen" : "Börse offen"}</div></td></tr>`;
+  }).join("");
+  $("#view-markets").innerHTML = `
+    <div class="card"><div class="card-head"><h2>Marktscanner</h2><span class="muted small">Sortiert nach Stärke · grün = unter den stärksten ${nf(0).format(top * 100)} % (nur dort wird gekauft)</span></div>
+      <div class="toolbar"><div class="seg" id="class-filter">${classes.map(([k, l]) => `<button type="button" data-k="${k}" class="${k === S.marketClass ? "active" : ""}">${esc(l)} <span class="muted">${counts[k]}</span></button>`).join("")}</div>
+        <input type="text" id="market-search" placeholder="Suchen (z. B. Gold, SAP, BTC)" value="${esc(S.marketQuery || "")}" autocomplete="off"></div>
+      <div class="table-wrap"><table class="scanner"><thead><tr><th>Markt</th><th class="hide-sm">Klasse</th><th class="r">Kurs</th><th class="r">Veränd.</th>
+        <th class="r">Stärke</th><th class="hide-sm">Bedingungen</th><th class="hide-sm">Status</th></tr></thead><tbody>${body || '<tr><td colspan="7" class="empty">Keine Treffer.</td></tr>'}</tbody></table></div>
+      <p class="muted small">Stärke = Rendite der letzten 20/60/120 Kerzen im Verhältnis zur typischen Schwankung. Veränderung über die letzten ${nf(0).format((st.markets.find((m) => m.change_span_hours)?.change_span_hours || 96) / 24)} Tage. Klick öffnet den Chart.</p></div>
+    <div class="card"><h2>Hinweis zu den Daten</h2><p class="muted small">Krypto-Kurse kommen live von ${esc(st.bot.exchange)}. Aktien, ETFs, Rohstoffe und Devisen kommen von Yahoo Finance (teils ~15 Minuten verzögert) und werden nur im Paper-Modus gehandelt. Gekauft wird nur, wenn die jeweilige Börse geöffnet ist.</p></div>`;
+  $$("#class-filter button").forEach((b) => b.onclick = () => { S.marketClass = b.dataset.k; renderMarkets(); });
+  const search = $("#market-search");
+  search.oninput = () => { S.marketQuery = search.value; const pos = search.selectionStart; renderMarkets(); const s2 = $("#market-search"); s2.focus(); s2.setSelectionRange(pos, pos); };
+  bindMarketClicks($("#view-markets"));
+}
+
+// ------------------------------------------------------------ KI
+function mdLite(text) {
+  // Minimaler, sicherer Markdown-Renderer: erst escapen, dann Überschriften, Listen, Fett
+  const out = [];
+  let list = false;
+  for (const raw of esc(text).split("\n")) {
+    const line = raw.trim();
+    const item = line.match(/^[-*] (.*)/) || line.match(/^\d+\. (.*)/);
+    if (item) { if (!list) { out.push("<ul>"); list = true; } out.push(`<li>${item[1]}</li>`); continue; }
+    if (list) { out.push("</ul>"); list = false; }
+    const h = line.match(/^#{1,4}\s+(.*)/);
+    if (h) out.push(`<h3 class="md-h">${h[1]}</h3>`);
+    else if (line) out.push(`<p>${line}</p>`);
+  }
+  if (list) out.push("</ul>");
+  return out.join("").replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+}
+
+function renderAI() {
+  const st = S.status;
+  if (!st) return;
+  const ai = st.ai, b = ai.bilanz;
+  const setup = !ai.available ? `<div class="card"><h2>So aktivierst du die KI</h2><ol class="explain">
+      <li>Auf <a href="https://console.anthropic.com" target="_blank" rel="noopener noreferrer">console.anthropic.com</a> anmelden, Guthaben aufladen (z. B. 10 $) und unter „API Keys“ einen Schlüssel erstellen.</li>
+      <li>Auf dem Server <code>tradingbot env</code> ausführen und <code>ANTHROPIC_API_KEY=…</code> eintragen.</li>
+      <li>Hier unter Einstellungen den KI-Modus wählen. Kosten: ca. 2–5 Cent pro geprüftem Kaufsignal, ca. 20–50 Cent pro Tagesanalyse – gedeckelt durch das Monatsbudget.</li></ol></div>` : "";
+  const brief = ai.brief ? `<div class="brief">${mdLite(ai.brief.text)}</div>
+      ${ai.brief.sources?.length ? `<details><summary class="muted small">${ai.brief.sources.length} Quellen</summary><ul class="sources">${ai.brief.sources.map((s) => `<li><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title || s.url)}</a></li>`).join("")}</ul></details>` : ""}
+      <p class="muted small">Erstellt ${localTime(ai.brief.t)} · ${esc(ai.brief.model)} · ca. ${nf(2).format(ai.brief.cost_usd)} $</p>`
+    : `<p class="muted">${esc(ai.brief_error || "Noch keine Analyse – sie entsteht einmal täglich (ab 06:00 UTC), sobald die KI aktiv ist.")}</p>`;
+  const decisions = ai.decisions.map((d) => `<tr><td>${localTime(d.t)}</td><td><b>${esc(d.symbol)}</b></td>
+      <td><span class="chip ${d.decision === "approve" ? "chip-ok" : d.decision === "reject" ? "chip-bad" : ""}">${d.decision === "approve" ? "genehmigt" : d.decision === "reject" ? (d.enforced ? "verhindert" : "abgelehnt (Hinweis)") : "Fehler"}</span></td>
+      <td>${esc(d.confidence || "")}</td><td class="wrap">${esc(d.reason)}${d.risks?.length ? `<div class="muted small">Risiken: ${d.risks.map(esc).join(" · ")}</div>` : ""}</td></tr>`).join("");
+  const shadows = ai.shadow.map((s) => `<tr><td>${localTime(s.t)}</td><td><b>${esc(s.symbol)}</b></td><td class="r">${price(s.entry)}</td>
+      <td><span class="chip ${s.status === "wäre Verlust" ? "chip-ok" : s.status === "wäre Gewinn" ? "chip-bad" : ""}">${esc(s.status)}</span></td>
+      <td class="r ${cls(s.result_pct)}">${pct(s.result_pct)}</td><td class="wrap muted small">${esc(s.reason)}</td></tr>`).join("");
+  $("#view-ai").innerHTML = `
+    <div class="kpis">
+      ${kpi("Modus", esc(ai.mode_label), ai.available ? esc(ai.model) : "kein API-Schlüssel – Regeln entscheiden")}
+      ${kpi("Kosten diesen Monat", `${nf(2).format(ai.cost.usd)} $`, `Budget ${nf(0).format(ai.budget_usd)} $ · ${ai.cost.calls} Aufrufe`)}
+      ${kpi("Käufe verhindert", String(b.rejected), `${b.open} noch offen`)}
+      ${kpi("Davon wären Verluste", String(b.would_lose), `und ${b.would_win} Gewinne`, b.would_lose >= b.would_win ? "pos" : "neg", "So wären die verhinderten Käufe mit denselben Stop-/Ziel-Regeln ausgegangen")}
+      ${kpi("Vermieden (Summe)", pct(b.avoided_pct), "positiv = KI hat Verluste vermieden", cls(b.avoided_pct))}
+    </div>
+    ${setup}
+    <div class="card"><div class="card-head"><h2>Marktanalyse des Tages</h2></div>${brief}</div>
+    <div class="card"><div class="card-head"><h2>Geprüfte Kaufsignale</h2><span class="muted small">Die KI kann Käufe nur verhindern – nie auslösen, nie Stops ändern.</span></div>
+      <div class="table-wrap"><table><thead><tr><th>Zeit</th><th>Markt</th><th>Entscheidung</th><th>Sicherheit</th><th>Begründung</th></tr></thead>
+      <tbody>${decisions || '<tr><td colspan="5" class="empty">Noch keine Kaufsignale geprüft.</td></tr>'}</tbody></table></div></div>
+    <div class="card"><div class="card-head"><h2>KI-Bilanz: Was wäre aus verhinderten Käufen geworden?</h2></div>
+      <p class="muted small">Jeder verhinderte Kauf wird im Hintergrund mit denselben Stop- und Ziel-Regeln weiterverfolgt (max. 14 Tage). „Wäre Verlust“ heißt: Die KI lag richtig.</p>
+      <div class="table-wrap"><table><thead><tr><th>Zeit</th><th>Markt</th><th class="r">Kurs</th><th>Ergebnis</th><th class="r">%</th><th>KI-Begründung</th></tr></thead>
+      <tbody>${shadows || '<tr><td colspan="6" class="empty">Noch keine verhinderten Käufe.</td></tr>'}</tbody></table></div></div>`;
 }
 
 function eventRow(ev) {
@@ -435,15 +580,20 @@ function equityChart(el, history) {
 // ------------------------------------------------------------ Chart-Ansicht
 function chartToolbar() {
   const st = S.status;
-  const symbols = st ? [...new Set([...st.bot.symbols, ...st.positions.map((p) => p.symbol)])] : [];
-  if (!S.chart.symbol || !symbols.includes(S.chart.symbol)) S.chart.symbol = symbols[0];
+  const markets = st ? st.markets : [];
+  const symbols = markets.map((m) => m.symbol);
+  if (!S.chart.symbol || !symbols.includes(S.chart.symbol)) S.chart.symbol = (markets.find((m) => !m.pending) || markets[0])?.symbol;
   if (!S.chart.tf) S.chart.tf = st?.bot.timeframe || "1h";
-  $("#chart-symbols").innerHTML = symbols.map((s) => `<button type="button" data-s="${esc(s)}" class="${s === S.chart.symbol ? "active" : ""}">${esc(s)}</button>`).join("");
+  const groups = Object.entries(st?.asset_classes || {}).map(([k, label]) => {
+    const items = markets.filter((m) => m.asset_class === k);
+    return items.length ? `<optgroup label="${esc(label)}">${items.map((m) => `<option value="${esc(m.symbol)}" ${m.symbol === S.chart.symbol ? "selected" : ""}>${esc(m.name)} (${esc(m.symbol)})</option>`).join("")}</optgroup>` : "";
+  }).join("");
+  $("#chart-symbols").innerHTML = `<select id="chart-symbol" aria-label="Markt wählen">${groups}</select>`;
+  $("#chart-symbol").onchange = (e) => { S.chart.symbol = e.target.value; S.chart.firstLoad = true; loadChart(); };
   $("#chart-tfs").innerHTML = Object.entries(TF_LABEL).map(([tf, l]) => `<button type="button" data-tf="${tf}" class="${tf === S.chart.tf ? "active" : ""}" title="${l}">${tf}</button>`).join("");
   const t = S.chart.toggles;
   $("#chart-toggles").innerHTML = [["ema", "EMAs"], ["markers", "Trades"], ["rsi", "RSI"]]
     .map(([k, l]) => `<button type="button" data-t="${k}" class="${t[k] ? "active" : ""}">${l}</button>`).join("");
-  $$("#chart-symbols button").forEach((b) => b.onclick = () => { S.chart.symbol = b.dataset.s; S.chart.firstLoad = true; loadChart(); });
   $$("#chart-tfs button").forEach((b) => b.onclick = () => { S.chart.tf = b.dataset.tf; S.chart.firstLoad = true; loadChart(); });
   $$("#chart-toggles button").forEach((b) => b.onclick = () => { t[b.dataset.t] = !t[b.dataset.t]; chartToolbar(); drawChart(); });
 }
@@ -522,9 +672,11 @@ function drawChart() {
     S.chart.firstLoad = false;
   }
   legend(null);
-  const src = d.source === "exchange" ? `Live-Daten von ${esc(S.status?.bot.exchange || "der Börse")}` : "Momentaufnahme des Bots (Börse gerade nicht erreichbar)";
+  const src = d.source === "exchange" ? `Live-Daten von ${esc(S.status?.bot.exchange || "der Börse")}`
+    : d.source === "yahoo" ? "Kursdaten von Yahoo Finance (teils ~15 Min. verzögert)" : "Momentaufnahme des Bots (Datenquelle gerade nicht erreichbar)";
   $("#chart-foot").innerHTML = `<span>${src} · aktualisiert ${localTime(new Date().toISOString(), false)} · Mausrad/Ziehen zum Zoomen</span>
-    <a href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent((S.status?.bot.exchange || "").toUpperCase() + ":" + d.symbol.replace("/", ""))}" target="_blank" rel="noopener noreferrer">Auf TradingView öffnen ↗</a>`;
+    ${d.symbol.includes("/") ? `<a href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent((S.status?.bot.exchange || "").toUpperCase() + ":" + d.symbol.replace("/", ""))}" target="_blank" rel="noopener noreferrer">Auf TradingView öffnen ↗</a>`
+      : `<a href="https://finance.yahoo.com/quote/${encodeURIComponent(d.symbol)}" target="_blank" rel="noopener noreferrer">Auf Yahoo Finance öffnen ↗</a>`}`;
 }
 
 function legend(param) {
@@ -541,7 +693,7 @@ function legend(param) {
   }
   if (!bar) return;
   const chg = bar.open ? (bar.close / bar.open - 1) * 100 : 0;
-  $("#chart-legend").innerHTML = `<b>${esc(d.symbol)}</b>
+  $("#chart-legend").innerHTML = `<b>${esc(d.name || d.symbol)}</b> <span class="muted">${esc(ccy(d.currency))}</span>
     <span>O <b>${price(bar.open)}</b></span><span>H <b>${price(bar.high)}</b></span><span>T <b>${price(bar.low)}</b></span>
     <span>S <b>${price(bar.close)}</b> <span class="${cls(chg)}">${pct(chg)}</span></span>
     ${S.chart.toggles.ema ? `<span><span class="sw sw-fast"></span>EMA ${p.ema_fast} ${price(vals.fast)}</span>
@@ -555,7 +707,7 @@ function renderChartSide() {
   const m = st.markets.find((x) => x.symbol === S.chart.symbol);
   const p = st.positions.find((x) => x.symbol === S.chart.symbol);
   const s = st.strategy;
-  let html = `<div class="card-head"><h2>${esc(S.chart.symbol)} – Bot-Sicht</h2><span class="muted small">${m?.updated ? "Stand " + relTime(m.updated) : ""}</span></div>`;
+  let html = `<div class="card-head"><h2>${esc(m?.name || S.chart.symbol)} – Bot-Sicht</h2><span class="muted small">${m?.updated ? "Stand " + relTime(m.updated) : ""}</span></div>`;
   if (m && !m.pending) {
     html += `<div class="status-line tone-${esc(m.tone)}"><span class="dot"></span><span>${esc(m.text)}</span></div>
       <div class="chips">${[[m.uptrend, `Kurs über EMA ${s.ema_trend}`], [m.fast_above_slow, `EMA ${s.ema_fast} über EMA ${s.ema_slow}`], [m.rsi_ok, `RSI ${m.rsi != null ? nf(1).format(m.rsi) : "–"} unter ${s.rsi_max_entry}`]]
@@ -604,13 +756,14 @@ function renderTrades() {
   if (!d) return;
   const symbols = [...new Set(d.trades.map((t) => t.symbol))];
   const rows = d.trades.filter((t) => !S.tradeFilter || t.symbol === S.tradeFilter);
-  const body = rows.map((t) => `<tr><td>${esc(localTime(t.closed_at))}</td><td><b>${esc(t.symbol)}</b></td>
-      <td class="r">${price(t.entry)}</td><td class="r">${price(t.exit)}</td><td class="r">${qty(t.qty)}</td>
+  const classes = S.status?.asset_classes || {};
+  const body = rows.map((t) => `<tr><td>${esc(localTime(t.closed_at))}</td><td><b>${esc(t.symbol)}</b><div class="muted small">${esc(classes[t.asset_class || "crypto"] || "")}</div></td>
+      <td class="r">${price(t.entry)} <span class="muted small">${esc(ccy(t.currency || S.quote))}</span></td><td class="r">${price(t.exit)}</td><td class="r">${qty(t.qty)}</td>
       <td class="r ${cls(t.pnl)}"><b>${money(t.pnl, true)}</b></td><td class="r ${cls(t.pnl)}">${pct((t.exit / t.entry - 1) * 100)}</td>
       <td>${esc(t.reason)}</td><td class="muted">${esc(duration((new Date(t.closed_at) - new Date(t.opened_at)) / 3.6e6))}</td></tr>`).join("");
   $("#view-trades").innerHTML = `${statsGrid(d.stats)}
     <div class="card"><div class="card-head"><h2>Alle abgeschlossenen Trades</h2>
-      <div class="topbar-right"><select id="trade-filter" aria-label="Nach Paar filtern"><option value="">Alle Paare</option>
+      <div class="topbar-right"><select id="trade-filter" aria-label="Nach Paar filtern"><option value="">Alle Märkte</option>
         ${symbols.map((s) => `<option ${s === S.tradeFilter ? "selected" : ""}>${esc(s)}</option>`).join("")}</select>
         <a class="btn btn-secondary btn-sm" href="/api/trades.csv" download>⬇ CSV (Excel/Steuer)</a></div></div>
       <div class="table-wrap"><table><thead><tr><th>Geschlossen</th><th>Paar</th><th class="r">Kauf</th><th class="r">Verkauf</th><th class="r">Menge</th>
@@ -659,6 +812,8 @@ async function loadSettings() {
   try {
     S.settings = await api("/api/settings");
     S.draft = structuredClone({ symbols: S.settings.symbols, timeframe: S.settings.timeframe,
+      universe: S.settings.universe, ai: { mode: S.settings.ai_mode },
+      scanner: Object.fromEntries(S.settings.fields.filter((f) => f.section === "scanner").map((f) => [f.key, f.value])),
       strategy: Object.fromEntries(S.settings.fields.filter((f) => f.section === "strategy").map((f) => [f.key, f.value])),
       risk: Object.fromEntries(S.settings.fields.filter((f) => f.section === "risk").map((f) => [f.key, f.value])) });
     S.dirty = false;
@@ -694,6 +849,17 @@ function renderSettings() {
           <div class="seg" id="tf-seg">${cfg.timeframes.map((tf) => `<button type="button" data-tf="${tf}" class="${tf === d.timeframe ? "active" : ""}">${TF_LABEL[tf] || tf}</button>`).join("")}</div>
           <span class="field-help">Längere Kerzen = weniger, ruhigere Trades und weniger Gebühren.</span></div>
       </div></div>
+    <div class="card"><div class="card-head"><h2>Weitere Märkte</h2><span class="muted small">Kursdaten von Yahoo Finance · nur Paper-Modus</span></div>
+      ${Object.entries(cfg.asset_classes).map(([k, label]) => `<h3 class="spaced">${esc(label)}</h3>
+        <div class="pair-chips" data-class="${k}">${(d.universe[k] || []).map((t) => `<label class="pair-chip on"><input type="checkbox" value="${esc(t)}" checked>${esc(t)}</label>`).join("") || '<span class="muted small">keine</span>'}</div>
+        <span class="input-unit add-ticker"><input type="text" data-add="${k}" placeholder="Ticker hinzufügen (wie auf finance.yahoo.com) + Enter" autocomplete="off"></span>`).join("")}
+      <p class="field-help spaced">Endungen: Xetra <code>.DE</code>, Wien <code>.VI</code>, Paris <code>.PA</code>, Amsterdam <code>.AS</code>, Schweiz <code>.SW</code> · Rohstoffe <code>=F</code> · Devisen z. B. <code>EURUSD=X</code>. Häkchen entfernen = Markt nicht mehr beobachten.</p></div>
+    <div class="card"><div class="card-head"><h2>Scanner &amp; KI</h2></div>
+      <div class="fields">${sec("scanner")}
+        <div class="field"><span class="field-label">KI-Risikomanager (Claude)</span>
+          <div class="seg" id="ai-seg">${Object.entries(cfg.ai_modes).map(([k, l]) => `<button type="button" data-ai="${k}" class="${k === d.ai.mode ? "active" : ""}">${esc(l)}</button>`).join("")}</div>
+          <span class="field-help">„Darf Käufe verhindern“: Claude prüft jedes Kaufsignal und kann es blockieren. „Nur Hinweise“: Claude kommentiert, entscheidet aber nicht. Braucht einen API-Schlüssel (Seite „KI“).</span></div>
+      </div></div>
     <div class="card"><div class="card-head"><h2>Risiko</h2></div><div class="fields">${sec("risk")}</div>
       <h3 class="spaced">Was das bei deinem Kapital bedeutet</h3><div class="impact" id="impact"></div></div>
     <div class="card"><div class="card-head"><h2>Strategie</h2><span class="muted small">Nach Änderungen am besten neu backtesten (tradingbot backtest).</span></div>
@@ -723,6 +889,24 @@ function renderSettings() {
     renderSettings();
     $("#dirty-note").textContent = "● Ungespeicherte Änderungen";
   };
+  $$(".pair-chips[data-class] input").forEach((cb) => cb.onchange = () => {
+    const k = cb.closest("[data-class]").dataset.class;
+    d.universe[k] = $$(`.pair-chips[data-class="${k}"] input`).filter((x) => x.checked).map((x) => x.value);
+    cb.parentElement.classList.toggle("on", cb.checked);
+    markDirty();
+  });
+  $$("input[data-add]").forEach((inp) => inp.onkeydown = (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    const v = inp.value.trim().toUpperCase();
+    if (!/^\^?[A-Z0-9][A-Z0-9.\-=]{0,14}$/.test(v) || v.endsWith(".L")) { toast("Ungültiger Ticker (Beispiele: AAPL, SAP.DE, GC=F, EURUSD=X)", "bad"); return; }
+    const k = inp.dataset.add;
+    d.universe[k] = [...new Set([...(d.universe[k] || []), v])];
+    S.dirty = true;
+    renderSettings();
+    $("#dirty-note").textContent = "● Ungespeicherte Änderungen";
+  });
+  $$("#ai-seg button").forEach((b) => b.onclick = () => { d.ai.mode = b.dataset.ai; $$("#ai-seg button").forEach((x) => x.classList.toggle("active", x === b)); markDirty(); });
   $$("#tf-seg button").forEach((b) => b.onclick = () => { d.timeframe = b.dataset.tf; $$("#tf-seg button").forEach((x) => x.classList.toggle("active", x === b)); markDirty(); });
   $$("input[data-sec]", form).forEach((inp) => inp.oninput = () => {
     const raw = parseFloat(inp.value.replace(",", "."));

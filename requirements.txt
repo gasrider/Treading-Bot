@@ -4,4 +4,6 @@ numpy>=1.26
 PyYAML>=6.0
 python-dotenv>=1.0
 requests>=2.31
+yfinance>=1.0
+anthropic>=2.0
 pytest>=8.0

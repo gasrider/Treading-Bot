@@ -28,10 +28,12 @@ def test_overrides_only_touch_allowed_keys(cfg):
     ({"risk": {"risk_per_trade": 0.2}}, "Risiko pro Trade"),
     ({"strategy": {"ema_fast": 60}}, "schnelle EMA"),
     ({"symbols": ["BTC/EUR", "ETH/USD"]}, "Quote-Währung"),
-    ({"symbols": []}, "Mindestens ein"),
+    ({"symbols": [], "universe": {}}, "Mindestens einen Markt"),
     ({"timeframe": "7m"}, "timeframe"),
 ])
 def test_validation_messages(cfg, change, message):
+    if "universe" in change:
+        cfg["universe"] = change.pop("universe")
     with pytest.raises(ValueError, match=message):
         validate(apply_overrides(cfg, change))
 
@@ -80,6 +82,7 @@ def test_bad_symbol_does_not_block_others(setup):
 
     ex.fetch_ohlcv = fetch
     bot.cfg["symbols"] = ["FAKE/EUR", "BTC/EUR"]
+    bot.universe = bot._build_universe()
     ex.cursor = first_entry + 1
     bot.step()
     assert "BTC/EUR" in bot.state["positions"]
