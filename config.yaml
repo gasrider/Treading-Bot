@@ -1,0 +1,42 @@
+# ===================== Trading-Bot Konfiguration =====================
+# mode: paper  -> echte Kurse, virtuelles Geld (EMPFOHLEN zum Start)
+# mode: live   -> echtes Geld! Erst nach mehreren Wochen Paper-Trading.
+mode: paper
+
+exchange: kraken            # Börse für paper/live (kraken, bitvavo, binance, ...)
+symbols: [BTC/EUR, ETH/EUR] # Handelspaare (alle mit derselben Quote-Währung!)
+timeframe: 1h               # Kerzen-Intervall: 15m, 1h, 4h, 1d
+
+strategy:                   # Trendfolge: EMA-Kreuzung + Trendfilter + ATR-Stops
+  ema_fast: 20
+  ema_slow: 50
+  ema_trend: 200            # nur kaufen, wenn Kurs über dieser EMA (Aufwärtstrend)
+  rsi_period: 14
+  rsi_max_entry: 70         # nicht kaufen, wenn überkauft
+  atr_period: 14
+  stop_atr: 2.0             # Stop-Loss = Einstieg - 2 x ATR
+  take_profit_atr: 4.0      # Take-Profit = Einstieg + 4 x ATR (0 = aus)
+  trailing_atr: 2.5         # Nachziehender Stop: Hoch - 2.5 x ATR (0 = aus)
+
+risk:
+  risk_per_trade: 0.01      # max. 1 % des Kontos Verlust pro Trade
+  max_position_pct: 0.30    # max. 30 % des Kontos in einer Position
+  max_open_positions: 2
+  max_daily_loss: 0.03      # -3 % an einem Tag -> keine neuen Trades bis morgen
+  max_drawdown: 0.15        # -15 % vom Höchststand -> alles verkaufen + Bot stoppt
+  min_order_value: 10       # Mindest-Ordergröße in Quote-Währung (EUR)
+
+paper:
+  starting_balance: 1000    # virtuelles Startkapital in EUR
+  fee: 0.0026               # Gebühr pro Order (Kraken Taker ~0.26 %)
+  slippage: 0.0005
+
+backtest:
+  data_exchange: binance    # Börse für historische Daten (öffentlich, kein Konto nötig)
+  days: 730
+  starting_balance: 1000
+  fee: 0.0026
+  slippage: 0.0005
+
+loop:
+  poll_seconds: 60          # wie oft der Bot den Markt prüft
