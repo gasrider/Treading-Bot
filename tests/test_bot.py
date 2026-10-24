@@ -44,6 +44,7 @@ class SilentNotifier:
 @pytest.fixture
 def setup(cfg, tmp_path, monkeypatch):
     monkeypatch.setattr(bot_module, "KILL_SWITCH", tmp_path / "STOP")
+    monkeypatch.setattr(bot_module, "RESUME_FILE", tmp_path / "RESUME")
     cfg["symbols"] = ["BTC/EUR"]
     df = synthetic(3000)
     # Index auf Vergangenheit verschieben, damit alle Kerzen "abgeschlossen" sind
@@ -87,15 +88,32 @@ def test_same_bar_not_processed_twice(setup):
     assert bot.state["positions"]["BTC/EUR"]["qty"] == qty
 
 
-def test_kill_switch_closes_everything(setup):
-    bot, ex, _, _, first_entry, tmp_path = setup
+def test_kill_switch_closes_everything_and_resume(setup):
+    bot, ex, notifier, _, first_entry, tmp_path = setup
     ex.cursor = first_entry + 1
     bot.step()
     (tmp_path / "STOP").write_text("")
-    with pytest.raises(SystemExit):
-        bot.step()
+    bot.step()                                  # Bot bleibt am Leben, handelt aber nicht
     assert not bot.state["positions"]
     assert bot.state["halted"]
+    bot.state["last_bar"].clear()
+    bot.step()                                  # auch ein neues Kaufsignal wird ignoriert
+    assert not bot.state["positions"]
+
+    (tmp_path / "RESUME").write_text("")
+    bot.step()
+    assert not bot.state["halted"]
+    assert not (tmp_path / "STOP").exists() and not (tmp_path / "RESUME").exists()
+    assert any("freigegeben" in m for m in notifier.messages)
+
+
+def test_equity_history_recorded_hourly(setup):
+    bot, ex, _, _, first_entry, _ = setup
+    ex.cursor = first_entry + 1
+    bot.step()
+    bot.step()
+    assert len(bot.state["equity_history"]) == 1
+    assert bot.state["equity_history"][0][1] == pytest.approx(1000, rel=0.01)
 
 
 def test_drawdown_halts_bot(setup):

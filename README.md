@@ -1,30 +1,128 @@
 # 🤖 Krypto-Trading-Bot
 
-Vollautomatischer Trading-Bot für Kryptowährungen (z. B. BTC/EUR, ETH/EUR).
-Er läuft rund um die Uhr, kauft und verkauft selbstständig und schützt dein Kapital mit festen Risikoregeln.
+Vollautomatischer Trading-Bot für Kryptowährungen (z. B. BTC/EUR, ETH/EUR). Er läuft **rund um die Uhr auf einem Cloud-Server**, kauft und verkauft selbstständig und schützt dein Kapital mit festen Risikoregeln.
+Du steuerst ihn über ein **Web-Dashboard mit Passwort**, das du am Handy und am PC öffnen kannst.
 
 > ⚠️ **Bitte zuerst lesen:** Kein Bot garantiert Gewinne. Die meisten Privatanleger verlieren beim Trading Geld.
 > Dieser Bot ist auf **Kapitalschutz** ausgelegt, nicht auf schnelle Gewinne. Setze nur Geld ein, dessen
-> Totalverlust du verkraften kannst. Starte **immer** mit Paper-Trading (virtuelles Geld).
+> Totalverlust du verkraften kannst. Er startet **immer** im Paper-Modus (virtuelles Geld).
 
 ---
 
 ## Inhalt
-1. [Wie der Bot handelt](#1-wie-der-bot-handelt)
-2. [Installation](#2-installation-auf-deinem-pc)
-3. [Backtest](#3-schritt-1-backtest)
-4. [Paper-Trading](#4-schritt-2-paper-trading-4-8-wochen)
-5. [Telegram-Benachrichtigungen](#5-telegram-benachrichtigungen-empfohlen)
-6. [24/7-Betrieb auf einem Server](#6-247-betrieb-auf-einem-server)
-7. [Live gehen mit echtem Geld](#7-schritt-3-live-gehen-mit-echtem-geld)
-8. [Überwachung und Not-Aus](#8-überwachung-und-not-aus)
+1. [Schnellstart: Server in 15 Minuten](#1-schnellstart-server-in-15-minuten)
+2. [Das Dashboard](#2-das-dashboard)
+3. [Telegram-Benachrichtigungen](#3-telegram-benachrichtigungen-empfohlen)
+4. [Verwaltung auf dem Server](#4-verwaltung-auf-dem-server)
+5. [Wie der Bot handelt](#5-wie-der-bot-handelt)
+6. [Backtest](#6-backtest)
+7. [Live gehen mit echtem Geld](#7-live-gehen-mit-echtem-geld)
+8. [Sicherheit](#8-sicherheit)
 9. [Steuern in Österreich](#9-steuern-in-österreich)
 10. [Konfiguration anpassen](#10-konfiguration-anpassen)
-11. [Fehlerbehebung](#11-fehlerbehebung)
+11. [Lokal auf dem PC (optional)](#11-lokal-auf-dem-pc-optional)
+12. [Fehlerbehebung](#12-fehlerbehebung)
 
 ---
 
-## 1. Wie der Bot handelt
+## 1. Schnellstart: Server in 15 Minuten
+
+Du brauchst einen kleinen Cloud-Server (VPS). Empfehlung: **[Hetzner Cloud](https://www.hetzner.com/cloud)**. Das kleinste Modell (2 vCPU, 4 GB RAM) kostet ca. 4–6 € im Monat, die Rechenzentren in Nürnberg/Falkenstein liegen nah an Österreich und rechnen nach Stunden ab.
+
+### Variante A: Ganz ohne Kommandozeile (Cloud-Config)
+
+1. Bei Hetzner registrieren und in der [Cloud Console](https://console.hetzner.cloud) ein **Projekt** anlegen.
+2. **Server hinzufügen**:
+   - Standort: **Nürnberg** oder **Falkenstein**
+   - Image: **Ubuntu 24.04**
+   - Typ: der kleinste **Shared vCPU**-Server (x86)
+   - Netzwerk: **öffentliche IPv4 aktiviert** lassen
+   - SSH-Key: optional (empfohlen, siehe [Sicherheit](#8-sicherheit))
+3. Ganz unten bei **„Cloud config“** den Inhalt von [`deploy/cloud-init.yaml`](deploy/cloud-init.yaml) einfügen und **zuerst dein eigenes Passwort eintragen**:
+   ```yaml
+   export DASHBOARD_PASSWORD='MeinSicheresPasswort2026'
+   ```
+   (mind. 12 Zeichen; erlaubt sind Buchstaben, Ziffern und `_ . , : + = @ ! % * -`). Wenn du Telegram schon eingerichtet hast ([Abschnitt 3](#3-telegram-benachrichtigungen-empfohlen)), trage auch Token und Chat-ID ein.
+4. **Erstellen & kaufen**. Der Server richtet sich jetzt **5–10 Minuten lang selbst ein**.
+5. Die IP-Adresse des Servers steht in der Cloud Console, z. B. `203.0.113.10`. Dein Dashboard ist dann erreichbar unter:
+   **`https://203-0-113-10.sslip.io`** (Punkte durch Bindestriche ersetzt)
+   Benutzer: `admin`, Passwort: dein Passwort aus Schritt 3.
+
+### Variante B: Per SSH (für jeden Ubuntu/Debian-Server)
+
+Server mit Ubuntu 24.04 erstellen, dann verbinden und einen Befehl ausführen:
+```bash
+ssh root@<SERVER-IP>
+curl -fsSL https://raw.githubusercontent.com/gasrider/Treading-Bot/master/deploy/install.sh | bash
+```
+Am Ende zeigt das Skript Dashboard-Adresse, Benutzer und ein **zufällig erzeugtes Passwort** an. Später kannst du es jederzeit mit `tradingbot access` wieder anzeigen.
+Ein eigenes Passwort setzt du so: `curl -fsSL ... | DASHBOARD_PASSWORD='DeinPasswort123' bash`
+
+### Was das Installations-Skript automatisch macht
+- installiert System-Updates und **automatische Sicherheitsupdates**
+- richtet die **Firewall** ein (nur SSH, HTTP und HTTPS offen) und **fail2ban** gegen Passwort-Angriffe
+- installiert **Docker** und startet drei Dienste: den **Bot**, das **Dashboard** und **Caddy**, das automatisch ein **HTTPS-Zertifikat** holt
+- richtet ein **tägliches Auto-Update** ein (04:17 Uhr): Neue Versionen aus diesem Repo werden automatisch eingespielt
+- legt den Verwaltungsbefehl **`tradingbot`** an
+- startet alles nach einem Server-Neustart automatisch wieder
+
+Der Bot startet im **Paper-Modus**: echte Kurse, virtuelle 1000 €. Lass ihn so **mindestens 4–8 Wochen** laufen.
+
+> 💡 **Eigene Domain?** Wenn du z. B. `bot.meinname.at` hast: einen DNS-A-Eintrag auf die Server-IP setzen, dann
+> `tradingbot env` → `DOMAIN=bot.meinname.at` eintragen und speichern. Caddy holt sich das Zertifikat automatisch.
+
+---
+
+## 2. Das Dashboard
+
+Unter `https://<deine-adresse>` siehst du nach dem Login:
+
+- **Status**: läuft / gestoppt / keine Antwort, dazu der Modus (PAPER oder LIVE)
+- **Kapital**, Höchststand, realisierter Gewinn, Trefferquote
+- **Kapitalverlauf** als Grafik
+- **Offene Positionen** mit Stop und Ziel sowie die **letzten Trades**
+- die letzten **Log-Zeilen**
+- **🛑 NOT-AUS**: verkauft sofort alles und stoppt den Handel. Danach erscheint **▶️ Handel wieder freigeben**.
+
+Die Seite aktualisiert sich jede Minute und ist für das Handy optimiert. Tipp: Im Handy-Browser „Zum Startbildschirm hinzufügen“.
+
+---
+
+## 3. Telegram-Benachrichtigungen (empfohlen)
+
+Du bekommst jeden Kauf und Verkauf, jeden Fehler, die Notbremse und eine **Warnung, wenn der Bot nicht mehr antwortet** aufs Handy.
+
+1. In Telegram den Kontakt **@BotFather** öffnen, `/newbot` senden und den Anweisungen folgen.
+2. Du bekommst einen **Token** (z. B. `123456:ABC-...`).
+3. Schreib deinem neuen Bot eine beliebige Nachricht.
+4. Öffne im Browser `https://api.telegram.org/bot<DEIN_TOKEN>/getUpdates` und suche `"chat":{"id":123456789`. Diese Zahl ist deine **Chat-ID**.
+5. Auf dem Server `tradingbot env` ausführen, `TELEGRAM_BOT_TOKEN=` und `TELEGRAM_CHAT_ID=` ausfüllen, mit Strg+O speichern und mit Strg+X schließen. Die Dienste starten automatisch neu, und du solltest „🤖 Bot gestartet“ erhalten.
+
+---
+
+## 4. Verwaltung auf dem Server
+
+Per SSH verbinden (`ssh root@<SERVER-IP>`), dann:
+
+| Befehl | Was passiert |
+|---|---|
+| `tradingbot status` | Zustand der Dienste, Kontostand, Positionen |
+| `tradingbot logs` | Live-Log (Strg+C beendet nur die Anzeige) |
+| `tradingbot stop` | **NOT-AUS**: alles verkaufen, Handel stoppen |
+| `tradingbot resume` | Handel nach Not-Aus/Notbremse wieder freigeben |
+| `tradingbot config` | Strategie/Risiko bearbeiten (`config.yaml`), danach automatischer Neustart |
+| `tradingbot env` | Passwörter und Schlüssel bearbeiten (`.env`), danach automatischer Neustart |
+| `tradingbot backtest` | Backtest direkt auf dem Server |
+| `tradingbot update` | Neueste Version sofort holen (passiert sonst täglich automatisch) |
+| `tradingbot access` | Dashboard-Adresse und Zugangsdaten anzeigen |
+| `tradingbot pause` / `start` | Bot anhalten/fortsetzen (**ohne** Verkauf; dann gibt es keine Stop-Überwachung!) |
+
+Alles liegt in `/opt/tradingbot`. Der Zustand (Kontostand, Positionen, Trades) steht in `state/`, die Logs in `logs/`.
+Deine `config.yaml` und `.env` werden von Updates **nie überschrieben**.
+
+---
+
+## 5. Wie der Bot handelt
 
 **Strategie: Trendfolge** (nur Kaufen und Verkaufen, kein Hebel, keine Leerverkäufe)
 
@@ -45,58 +143,21 @@ Er läuft rund um die Uhr, kauft und verkauft selbstständig und schützt dein K
 | Max. offene Positionen | 2 |
 | Tagesverlust-Limit | −3 % → keine neuen Trades bis zum nächsten Tag |
 | **Notbremse** | −15 % vom Höchststand → alles wird verkauft, der Bot stoppt |
-| Not-Aus | Datei `state/STOP` anlegen → alles wird verkauft, der Bot beendet sich |
+| **Not-Aus** | Knopf im Dashboard oder `tradingbot stop` |
+| **Watchdog** | Gibt der Bot 15 Minuten kein Lebenszeichen, kommt eine Telegram-Warnung. |
 
 Signale werden nur auf **abgeschlossenen** Kerzen berechnet. Es gibt also keine Fehlsignale durch Kerzen, die sich noch bewegen.
 
 ---
 
-## 2. Installation auf deinem PC
+## 6. Backtest
 
-**Voraussetzungen:** [Python 3.11 oder neuer](https://www.python.org/downloads/) (unter Windows bei der Installation „Add Python to PATH“ anhaken) und [Git](https://git-scm.com/downloads).
-
-```bash
-git clone https://github.com/gasrider/Treading-Bot.git
-cd Treading-Bot
-
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# Mac/Linux:
-source .venv/bin/activate
-
-pip install -r requirements.txt
-```
-
-Konfigurationsdatei für Geheimnisse anlegen:
-```bash
-# Windows:
-copy .env.example .env
-# Mac/Linux:
-cp .env.example .env
-```
-
-Funktionstest (sollte „14 passed“ melden):
-```bash
-python -m pytest -q
-```
-
----
-
-## 3. Schritt 1: Backtest
-
-Teste die Strategie zuerst auf den Kursdaten der letzten 2 Jahre. Dafür brauchst du kein Konto.
-
-```bash
-python main.py backtest
-```
+Teste die Strategie auf den Kursdaten der letzten 2 Jahre, am einfachsten direkt auf dem Server mit `tradingbot backtest`.
 
 Du siehst für jedes Paar unter anderem:
 - **Rendite %** gegenüber **Buy & Hold %** (einfach kaufen und halten)
 - **Max. Drawdown %**: der größte zwischenzeitliche Verlust. *Frag dich: Würde ich das aushalten?*
 - **Trefferquote**, **Profit-Faktor** (über 1,3 ist gut) und Anzahl der Trades
-
-Alle einzelnen Trades und die Kapitalkurve landen als CSV in `results/` und lassen sich in Excel öffnen.
 
 > 💡 Ein Trendfolge-Bot verliert in Seitwärtsphasen oft mehrere kleine Trades hintereinander und verdient
 > an wenigen großen Trends. Eine Trefferquote von 35–45 % ist dabei normal.
@@ -104,81 +165,14 @@ Alle einzelnen Trades und die Kapitalkurve landen als CSV in `results/` und lass
 > ⚠️ **Überoptimierung vermeiden:** Wenn du Parameter so lange änderst, bis der Backtest toll aussieht,
 > passt die Strategie nur auf die Vergangenheit. Ändere wenig und teste auf mehreren Paaren und Zeiträumen.
 
-Offline-Demo ohne Internet: `python main.py backtest --synthetic`
-
 ---
 
-## 4. Schritt 2: Paper-Trading (4–8 Wochen)
+## 7. Live gehen mit echtem Geld
 
-In `config.yaml` steht standardmäßig `mode: paper`. Der Bot handelt dann mit **echten Live-Kursen und virtuellen 1000 €**. Dafür brauchst du kein Konto und keine API-Schlüssel.
-
-```bash
-python main.py run       # Bot starten (läuft, bis du Strg+C drückst)
-python main.py status    # in einem zweiten Fenster: Kontostand und Positionen
-```
-
-Lass ihn **mindestens 4–8 Wochen** laufen, am besten gleich 24/7 auf einem Server (siehe Abschnitt 6).
-Erst wenn das Ergebnis ungefähr zum Backtest passt, geht es weiter.
-
----
-
-## 5. Telegram-Benachrichtigungen (empfohlen)
-
-Dann bekommst du jeden Kauf, Verkauf und Fehler aufs Handy.
-
-1. In Telegram den Kontakt **@BotFather** öffnen, `/newbot` senden und den Anweisungen folgen.
-2. Du bekommst einen **Token** (z. B. `123456:ABC-...`). Trage ihn in `.env` bei `TELEGRAM_BOT_TOKEN=` ein.
-3. Schreib deinem neuen Bot eine beliebige Nachricht.
-4. Öffne im Browser `https://api.telegram.org/bot<DEIN_TOKEN>/getUpdates` und suche `"chat":{"id":123456789`.
-   Diese Zahl kommt in `TELEGRAM_CHAT_ID=`.
-5. Starte den Bot neu. Du solltest „🤖 Bot gestartet“ erhalten.
-
----
-
-## 6. 24/7-Betrieb auf einem Server
-
-Dein PC müsste sonst Tag und Nacht laufen. Besser ist ein kleiner Cloud-Server (VPS), z. B. **Hetzner Cloud CX22** (ca. 4–5 €/Monat, Rechenzentrum in Deutschland/Finnland) mit Ubuntu 24.04. Ein Raspberry Pi geht auch.
-
-### Variante A: Docker (empfohlen)
-Mit dem Server per SSH verbinden (`ssh root@<SERVER-IP>`), dann:
-
-```bash
-# Docker installieren
-curl -fsSL https://get.docker.com | sh
-
-# Bot holen und einrichten
-git clone https://github.com/gasrider/Treading-Bot.git
-cd Treading-Bot
-cp .env.example .env
-nano .env                 # Telegram-Daten eintragen (später auch API-Keys)
-mkdir -p state logs
-
-# Starten (läuft im Hintergrund und startet nach Server-Neustart automatisch)
-docker compose up -d --build
-
-# Live-Log ansehen (Strg+C beendet nur die Anzeige)
-docker compose logs -f
-
-# Status
-docker compose exec tradingbot python main.py status
-```
-
-Nach einer Änderung an `config.yaml`: `docker compose restart`.
-Nach einem Code-Update: `git pull && docker compose up -d --build`.
-
-### Variante B: systemd (z. B. Raspberry Pi)
-Siehe die Anleitung in `deploy/tradingbot.service`.
-
-**Server-Sicherheit:** SSH-Login nur mit Schlüssel, Passwort-Login abschalten, `apt update && apt upgrade` regelmäßig ausführen.
-
----
-
-## 7. Schritt 3: Live gehen mit echtem Geld
-
-Mach das **erst nach erfolgreichem Paper-Trading**.
+Mach das **erst nach 4–8 Wochen erfolgreichem Paper-Trading**, wenn das Ergebnis ungefähr zum Backtest passt.
 
 ### 7.1 Börsenkonto
-Voreingestellt ist **Kraken**: EU-reguliert, EUR-Paare, SEPA-Einzahlung, gute API. Andere Börsen gehen auch (z. B. `bitvavo`), dann `exchange:` in `config.yaml` ändern.
+Voreingestellt ist **Kraken**: EU-reguliert, EUR-Paare, SEPA-Einzahlung, gute API. Andere Börsen gehen auch (z. B. `bitvavo`), dann `exchange:` in der Konfiguration ändern.
 
 1. Konto auf kraken.com eröffnen und verifizieren (Ausweis, Wohnsitz).
 2. EUR per SEPA-Überweisung einzahlen. **Starte klein: 100–300 €.**
@@ -198,42 +192,38 @@ Kraken → *Settings → API → Create API Key*:
 So kann selbst ein gestohlener Schlüssel kein Geld abheben.
 
 ### 7.3 Bot umstellen
-In `.env`:
-```
-EXCHANGE_API_KEY=dein_key
-EXCHANGE_API_SECRET=dein_secret
-LIVE_TRADING_CONFIRM=JA
-```
-In `config.yaml`:
-```yaml
-mode: live
-risk:
-  min_order_value: 10   # an die Mindestorder der Börse anpassen
-```
-Danach neu starten (`docker compose up -d`).
+1. `tradingbot env` ausführen und eintragen:
+   ```
+   EXCHANGE_API_KEY=dein_key
+   EXCHANGE_API_SECRET=dein_secret
+   LIVE_TRADING_CONFIRM=JA
+   ```
+2. `tradingbot config` ausführen und `mode: paper` auf `mode: live` ändern.
+3. Im Dashboard steht jetzt **LIVE – echtes Geld** (rot).
 
 **Wichtig für kleine Konten:** Bei 1 % Risiko und 200 € Kapital sind Positionen oft nur 20–60 € groß. Liegt eine Order unter dem Minimum der Börse (z. B. 0,0001 BTC), lässt der Bot den Trade aus und schreibt das ins Log.
 
 **Hinweise:**
 - Der Bot verwaltet **nur die Coins, die er selbst gekauft hat**. Eigene Bestände bleiben unberührt, solange du sie nicht in denselben Paaren manuell handelst.
 - Paper- und Live-Zustand werden getrennt gespeichert (`state/paper_state.json` und `state/live_state.json`).
-- Stops werden vom Bot überwacht, **nicht** als Order an der Börse hinterlegt. Ist der Bot offline, greift auch kein Stop. Deshalb gehören Server-Betrieb und Telegram-Fehlermeldungen dazu.
+- Stops werden vom Bot überwacht, **nicht** als Order an der Börse hinterlegt. Ist der Bot offline, greift auch kein Stop. Deshalb gibt es Watchdog und Telegram-Warnung.
 
 ---
 
-## 8. Überwachung und Not-Aus
+## 8. Sicherheit
 
-| Aktion | Befehl |
-|---|---|
-| Status | `python main.py status` (Docker: `docker compose exec tradingbot python main.py status`) |
-| Logs | `logs/bot.log` bzw. `docker compose logs -f` |
-| **Not-Aus** (alles verkaufen und beenden) | `touch state/STOP` (Windows: leere Datei `STOP` im Ordner `state` anlegen) |
-| Pausieren ohne Verkauf | `docker compose stop` (offene Positionen bleiben **ohne Stop-Überwachung**!) |
-| Notbremse lösen | Erst die Ursache prüfen, dann `python main.py reset-halt` |
+Schon eingebaut:
+- Das Dashboard ist nur über **HTTPS** und mit **Passwort** erreichbar. Nach 10 Fehlversuchen wird die IP 15 Minuten gesperrt.
+- Dashboard und Webserver bekommen die **Börsen-Schlüssel nicht** zu sehen, nur der Bot-Container hat sie.
+- Die Firewall lässt nur SSH, HTTP und HTTPS durch, fail2ban blockt SSH-Angreifer, Sicherheitsupdates laufen automatisch.
+- `.env` ist nur für root lesbar und wird nie zu GitHub hochgeladen.
 
-Nach einem Not-Aus `state/STOP` wieder löschen, bevor du neu startest.
-
-**Routine:** täglich kurz Telegram anschauen, wöchentlich `status` prüfen und mit dem Backtest vergleichen.
+Empfohlen:
+- **SSH-Key statt Passwort:** Beim Erstellen des Servers bei Hetzner einen SSH-Key hinterlegen ([Anleitung von Hetzner](https://community.hetzner.com/tutorials/howto-ssh-key/de)).
+- **2-Faktor-Login** bei Hetzner, Kraken, GitHub und Telegram aktivieren.
+- **API-Schlüssel ohne Auszahlungsrecht** und mit IP-Whitelist (siehe 7.2).
+- **Updates kommen aus diesem GitHub-Repo.** Wer Schreibzugriff auf das Repo hat, kann Code auf deinen Server bringen. Schütze deinen GitHub-Account deshalb mit 2FA.
+  Wenn du keine automatischen Updates willst: `systemctl disable --now tradingbot-update.timer`
 
 ---
 
@@ -243,14 +233,14 @@ Nach einem Not-Aus `state/STOP` wieder löschen, bevor du neu startest.
 - Gewinne aus Kryptowährungen, die nach dem 28.02.2021 angeschafft wurden, unterliegen dem **Sondersteuersatz von 27,5 %**.
 - Jeder Verkauf von Krypto gegen Euro ist ein steuerlich relevanter Vorgang. Ein Bot erzeugt **viele** davon.
 - Ausländische Börsen wie Kraken behalten in der Regel **keine KESt** ein. Du musst die Gewinne selbst in der Einkommensteuererklärung angeben (Beilage E1kv).
-- Bewahre alle Trade-Historien auf (Börsen-Export und `closed_trades` in der State-Datei). Tools wie Blockpit helfen bei der Aufstellung.
+- Bewahre alle Trade-Historien auf (Börsen-Export und `closed_trades` in `state/live_state.json`). Tools wie Blockpit helfen bei der Aufstellung.
 - Am besten vorher kurz mit einem Steuerberater sprechen.
 
 ---
 
 ## 10. Konfiguration anpassen
 
-Alle Einstellungen stehen kommentiert in `config.yaml`. Die wichtigsten:
+Mit `tradingbot config` bearbeitest du die Einstellungen. Alle Optionen sind dort kommentiert, die Vorlage ist [`config.example.yaml`](config.example.yaml). Die wichtigsten:
 
 - `symbols`: Handelspaare, z. B. `[BTC/EUR, ETH/EUR, SOL/EUR]`
 - `timeframe`: `1h` (Standard), `4h` (weniger Trades, weniger Gebühren) oder `15m` (mehr Trades, mehr Rauschen)
@@ -259,29 +249,65 @@ Alle Einstellungen stehen kommentiert in `config.yaml`. Die wichtigsten:
 
 Projektaufbau:
 ```
-main.py                  Befehle: backtest | run | status | reset-halt
-config.yaml              Einstellungen
-.env                     Geheimnisse (API-Keys, Telegram) – nie teilen!
+main.py                  Befehle: backtest | run | status | reset-halt | dashboard
+config.example.yaml      Vorlage – wird beim ersten Start zu config.yaml kopiert
+.env.example             Vorlage für Passwörter/Schlüssel (.env)
+docker-compose.yml       Bot + Dashboard + Caddy (HTTPS)
+deploy/
+  install.sh             Vollautomatische Server-Installation
+  cloud-init.yaml        Für die Einrichtung ohne SSH (Hetzner "Cloud config")
+  tradingbot-cli.sh      Verwaltungsbefehl "tradingbot"
+  update.sh              Auto-Update (täglich per systemd-Timer)
+  Caddyfile              HTTPS-Webserver
 tradingbot/
   strategy.py            Kauf-/Verkaufsregeln
   indicators.py          EMA, RSI, ATR
   risk.py                Positionsgröße, Tageslimit, Notbremse
   broker.py              Paper- und Live-Orderausführung
-  bot.py                 Dauerbetrieb
+  bot.py                 Dauerbetrieb, Not-Aus, Lebenszeichen
+  dashboard.py           Web-Dashboard + Watchdog
   backtest.py            Historischer Test
   data.py                Kursdaten laden
-tests/                   Automatische Tests (python -m pytest)
+tests/                   Automatische Tests (laufen bei jedem Push auf GitHub)
 ```
 
 ---
 
-## 11. Fehlerbehebung
+## 11. Lokal auf dem PC (optional)
+
+Zum Ausprobieren oder Entwickeln brauchst du [Python 3.11+](https://www.python.org/downloads/) (unter Windows „Add Python to PATH“ anhaken) und [Git](https://git-scm.com/downloads):
+
+```bash
+git clone https://github.com/gasrider/Treading-Bot.git
+cd Treading-Bot
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+source .venv/bin/activate       # Mac/Linux
+pip install -r requirements.txt
+
+python -m pytest -q                       # Funktionstest
+python main.py backtest                   # Backtest
+python main.py backtest --synthetic       # Offline-Demo ohne Internet
+python main.py run                        # Bot im Paper-Modus (Strg+C beendet)
+python main.py status                     # Zustand anzeigen
+```
+
+Mit Docker Desktop geht auch der komplette Stack inklusive Dashboard: `.env.example` nach `.env` kopieren, `DASHBOARD_PASSWORD` setzen, `config.example.yaml` nach `config.yaml` kopieren und dann `docker compose up -d --build`. Das Dashboard ist danach unter `https://localhost` erreichbar (Zertifikatswarnung bestätigen).
+
+---
+
+## 12. Fehlerbehebung
 
 | Problem | Lösung |
 |---|---|
+| Dashboard nicht erreichbar | 10 Minuten nach dem Erstellen nochmal versuchen. Dann per SSH `tradingbot status` und `cat /var/log/tradingbot-install.log` prüfen. |
+| Browser warnt vor dem Zertifikat | Das erste Zertifikat kann 1–2 Minuten dauern. Prüfe, ob Port 80/443 in einer Hetzner-Firewall offen ist. |
+| Passwort vergessen | Per SSH: `tradingbot access` |
+| Status „Keine Antwort“ | `tradingbot logs` ansehen, ggf. `tradingbot restart` |
 | `Netzwerkproblem ...` im Log | Kurze Internet- oder Börsenstörung. Der Bot versucht es automatisch erneut. |
-| `Live-Modus gesperrt` | `LIVE_TRADING_CONFIRM=JA` in `.env` setzen |
+| `Live-Modus gesperrt` | `LIVE_TRADING_CONFIRM=JA` per `tradingbot env` setzen |
 | `Order zu klein` | Mehr Kapital einsetzen oder `max_position_pct` erhöhen |
 | `Invalid key` / `Permission denied` | Prüfe API-Key, Secret, Rechte und IP-Whitelist |
 | Backtest lädt keine Daten | `backtest.data_exchange` auf eine andere Börse setzen (z. B. `kraken`, `bitvavo`) |
 | Bot macht tagelang nichts | Das ist normal: Der Bot wartet auf einen Aufwärtstrend. Im Log steht bei jeder Kerze, was er sieht. |
+| Update-Protokoll | `/opt/tradingbot/logs/update.log` |

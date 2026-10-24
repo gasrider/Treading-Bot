@@ -4,16 +4,18 @@
   python main.py backtest --synthetic  Offline-Demo mit künstlichen Daten
   python main.py run                   Bot starten (paper oder live, laut config.yaml)
   python main.py status                Aktuellen Zustand anzeigen
-  python main.py reset-halt            Notbremse nach Prüfung wieder lösen
+  python main.py reset-halt            Not-Aus/Notbremse nach Prüfung wieder lösen
+  python main.py dashboard             Web-Dashboard starten
 """
 import argparse
 import logging
+import shutil
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from tradingbot.backtest import run_backtest
-from tradingbot.bot import TradingBot, status_text
+from tradingbot.bot import RESUME_FILE, TradingBot, status_text
 from tradingbot.broker import LiveBroker, PaperBroker
 from tradingbot.config import load_config
 from tradingbot.data import fetch_history, make_exchange, synthetic
@@ -21,10 +23,10 @@ from tradingbot.notifier import Notifier
 from tradingbot.state import StateStore
 
 
-def setup_logging():
+def setup_logging(filename="bot.log"):
     Path("logs").mkdir(exist_ok=True)
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(message)s")
-    file_handler = RotatingFileHandler("logs/bot.log", maxBytes=5_000_000, backupCount=5, encoding="utf-8")
+    file_handler = RotatingFileHandler(f"logs/{filename}", maxBytes=5_000_000, backupCount=5, encoding="utf-8")
     file_handler.setFormatter(fmt)
     console = logging.StreamHandler(sys.stdout)
     console.setFormatter(fmt)
@@ -85,13 +87,16 @@ def cmd_status(cfg, args):
 
 
 def cmd_reset_halt(cfg, args):
-    store = StateStore(state_path(cfg))
-    state = store.load()
-    state["halted"] = False
-    state["halt_reason"] = ""
-    state.pop("peak_equity", None)
-    store.save(state)
-    print("Notbremse zurückgesetzt. Höchststand wird beim nächsten Start neu gemessen.")
+    Path("state").mkdir(exist_ok=True)
+    RESUME_FILE.write_text("")
+    print("Freigabe angefordert: Der Bot hebt Not-Aus/Notbremse beim nächsten Durchlauf auf "
+          "(spätestens nach poll_seconds bzw. beim nächsten Start).")
+
+
+def cmd_dashboard(cfg, args):
+    from tradingbot.dashboard import serve
+
+    serve(cfg, state_path(cfg))
 
 
 def main():
@@ -103,12 +108,18 @@ def main():
     sub.add_parser("run")
     sub.add_parser("status")
     sub.add_parser("reset-halt")
+    sub.add_parser("dashboard")
     args = parser.parse_args()
+    if not Path(args.config).exists() and Path("config.example.yaml").exists():
+        shutil.copy("config.example.yaml", args.config)
+        print(f"{args.config} aus config.example.yaml angelegt – dort kannst du alles anpassen.")
     cfg = load_config(args.config)
-    setup_logging()
-    {"backtest": cmd_backtest, "run": cmd_run, "status": cmd_status, "reset-halt": cmd_reset_halt}[
-        args.command
-    ](cfg, args)
+    setup_logging("dashboard.log" if args.command == "dashboard" else "bot.log")
+    commands = {
+        "backtest": cmd_backtest, "run": cmd_run, "status": cmd_status,
+        "reset-halt": cmd_reset_halt, "dashboard": cmd_dashboard,
+    }
+    commands[args.command](cfg, args)
 
 
 if __name__ == "__main__":

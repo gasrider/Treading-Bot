@@ -1,0 +1,32 @@
+# Prüft jeden Push: Tests, Shell-Skripte und ob das Docker-Image baut.
+# Der Server holt sich Updates nur von master – hier sieht man vorher, ob alles grün ist.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - name: Shell-Skripte prüfen
+        run: shellcheck deploy/*.sh
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t tradingbot:ci .
+      - name: Compose-Datei prüfen
+        run: |
+          cp .env.example .env
+          sed -i 's/^DASHBOARD_PASSWORD=.*/DASHBOARD_PASSWORD=ci-test-passwort/' .env
+          docker compose config --quiet

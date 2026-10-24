@@ -1,7 +1,7 @@
 """Der Dauerbetrieb: prüft regelmäßig den Markt, verwaltet Positionen und Risiko."""
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import ccxt
@@ -13,7 +13,9 @@ from .strategy import add_indicators, initial_levels, signal_at, trail_stop, war
 
 log = logging.getLogger(__name__)
 
-KILL_SWITCH = Path("state") / "STOP"
+KILL_SWITCH = Path("state") / "STOP"      # anlegen = alles verkaufen, Handel stoppen
+RESUME_FILE = Path("state") / "RESUME"    # anlegen = Stopp/Notbremse aufheben
+EQUITY_HISTORY_MAX = 24 * 365
 
 
 class TradingBot:
@@ -80,14 +82,41 @@ class TradingBot:
         for symbol in list(self.state["positions"]):
             self.close_position(symbol, reason)
 
+    def record_equity(self, equity: float) -> None:
+        """Kapitalverlauf höchstens einmal pro Stunde mitschreiben (für das Dashboard)."""
+        history = self.state.setdefault("equity_history", [])
+        now = datetime.now(timezone.utc)
+        if history and now - datetime.fromisoformat(history[-1][0]) < timedelta(hours=1):
+            return
+        history.append([now.isoformat(timespec="seconds"), round(equity, 2)])
+        del history[:-EQUITY_HISTORY_MAX]
+
+    def handle_control_files(self) -> None:
+        if RESUME_FILE.exists():
+            KILL_SWITCH.unlink(missing_ok=True)
+            RESUME_FILE.unlink(missing_ok=True)
+            if self.state["halted"]:
+                self.state["halted"] = False
+                self.state["halt_reason"] = ""
+                self.state.pop("peak_equity", None)
+                self._halt_notified = False
+                self.notifier.send("▶️ Handel wieder freigegeben.")
+        if KILL_SWITCH.exists() and not (
+            self.state["halted"] and self.state["halt_reason"].startswith("Not-Aus")
+        ):
+            self.close_all("Not-Aus")
+            self.state["halted"] = True
+            self.state["halt_reason"] = "Not-Aus ausgelöst"
+
     # ---------- Ein Durchlauf ----------
     def step(self) -> None:
-        if KILL_SWITCH.exists():
-            self.close_all("Not-Aus (STOP-Datei)")
-            self.state["halted"] = True
-            self.state["halt_reason"] = "Not-Aus über STOP-Datei"
+        self.handle_control_files()
+        if self.state["halted"] and self.state["halt_reason"].startswith("Not-Aus"):
+            if not self._halt_notified:
+                self.notifier.send("🛑 Not-Aus: alle Positionen verkauft, Bot handelt nicht mehr.")
+                self._halt_notified = True
             self.store.save(self.state)
-            raise SystemExit("STOP-Datei gefunden – alle Positionen geschlossen, Bot beendet.")
+            return
 
         # 1) Stops und Take-Profits mit aktuellem Kurs prüfen
         prices = {}
@@ -102,6 +131,7 @@ class TradingBot:
         # 2) Risiko-Notbremse
         equity = self.equity(prices)
         self.guard.update(equity)
+        self.record_equity(equity)
         if self.state["halted"]:
             if self.state["positions"]:
                 self.close_all("Notbremse")
@@ -145,27 +175,37 @@ class TradingBot:
 
     def run(self) -> None:
         mode = self.cfg["mode"].upper()
+        try:
+            capital = f"Kapital {self.equity():.2f} {self.cfg['quote']}"
+        except Exception as e:  # Börse beim Start nicht erreichbar – trotzdem weiterlaufen
+            capital = f"Kapital noch unbekannt ({e.__class__.__name__})"
         self.notifier.send(
             f"🤖 Bot gestartet ({mode}) – {', '.join(self.cfg['symbols'])} auf {self.cfg['timeframe']}, "
-            f"Kapital {self.equity():.2f} {self.cfg['quote']}"
+            + capital
         )
         errors = 0
         while True:
             try:
                 self.step()
                 errors = 0
+                self.state["last_error"] = ""
             except (ccxt.NetworkError, ccxt.ExchangeNotAvailable) as e:
                 errors += 1
+                self.state["last_error"] = f"Netzwerk: {e}"[:300]
                 log.warning("Netzwerkproblem (%d): %s", errors, e)
             except (SystemExit, KeyboardInterrupt):
                 self.store.save(self.state)
-                self.notifier.send("🛑 Bot beendet.")
+                self.notifier.send("⏹️ Bot-Prozess beendet.")
                 raise
             except Exception as e:  # Bot soll bei unerwarteten Fehlern nicht sterben
                 errors += 1
+                self.state["last_error"] = str(e)[:300]
                 log.exception("Fehler im Durchlauf")
                 if errors in (1, 5, 20):
                     self.notifier.send(f"⚠️ Fehler im Bot ({errors}x): {e}")
+            self.state["heartbeat"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            self.state["mode"] = self.cfg["mode"]
+            self.store.save(self.state)
             time.sleep(self.cfg["loop"]["poll_seconds"] * min(2 ** max(errors - 1, 0), 10))
 
 

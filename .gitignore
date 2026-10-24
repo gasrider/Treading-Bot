@@ -9,3 +9,5 @@ state/
 results/
 state/STOP
 .pytest_cache/
+config.yaml
+.env.bak*

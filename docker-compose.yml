@@ -1,13 +1,71 @@
+# Startet drei Dienste:
+#   bot        – der eigentliche Trading-Bot
+#   dashboard  – Web-Oberfläche (Status, Trades, Not-Aus), mit Passwort
+#   caddy      – HTTPS-Webserver, holt sich automatisch ein Let's-Encrypt-Zertifikat
+# Befehle: docker compose up -d --build | docker compose logs -f | docker compose ps
+x-common: &common
+  build: .
+  image: tradingbot:latest
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
 services:
-  tradingbot:
-    build: .
+  bot:
+    <<: *common
     container_name: tradingbot
-    restart: unless-stopped        # startet nach Absturz/Neustart automatisch neu
-    env_file: .env
+    command: ["python", "main.py", "run"]
+    env_file: .env                # nur der Bot bekommt die Börsen-Schlüssel
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - ./state:/app/state         # Kontostand, Positionen, Not-Aus-Datei
+      - ./state:/app/state
       - ./logs:/app/logs
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
+    healthcheck:
+      test: ["CMD", "python", "-m", "tradingbot.healthcheck"]
+      interval: 2m
+      timeout: 20s
+      start_period: 5m
+      retries: 3
+
+  dashboard:
+    <<: *common
+    container_name: tradingbot-dashboard
+    command: ["python", "main.py", "dashboard"]
+    environment:                  # bewusst OHNE Börsen-Schlüssel (Werte kommen aus .env)
+      DASHBOARD_HOST: 0.0.0.0
+      DASHBOARD_PORT: "8080"
+      DASHBOARD_USER: ${DASHBOARD_USER:-admin}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?DASHBOARD_PASSWORD in .env setzen}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./state:/app/state
+      - ./logs:/app/logs
+    ports:
+      - "127.0.0.1:8080:8080"   # nur lokal erreichbar (SSH-Tunnel); von außen nur über Caddy/HTTPS
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+
+  caddy:
+    image: caddy:2.8.4-alpine
+    container_name: tradingbot-caddy
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [dashboard]
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,10 @@
+# DOMAIN kommt aus .env, z. B. 203-0-113-10.sslip.io (funktioniert ohne eigene Domain)
+# oder bot.meine-domain.at. Caddy besorgt und erneuert das HTTPS-Zertifikat automatisch.
+{$DOMAIN} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	reverse_proxy dashboard:8080
+}

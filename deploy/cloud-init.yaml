@@ -1,0 +1,22 @@
+#cloud-config
+# =============================================================================
+#  Vollautomatische Einrichtung beim Erstellen des Servers (ohne SSH!).
+#
+#  Hetzner Cloud: Server erstellen → ganz unten "Cloud config" → diesen Text einfügen.
+#  (Funktioniert genauso bei DigitalOcean "User data", Netcup, IONOS u. a.)
+#
+#  VORHER unten ausfüllen:
+#    DASHBOARD_PASSWORD  – dein Passwort fürs Dashboard (mind. 12 Zeichen)
+#    TELEGRAM_*          – optional; dann bekommst du die Dashboard-Adresse aufs Handy
+#
+#  Nach ca. 5–10 Minuten ist das Dashboard erreichbar unter:
+#    https://<SERVER-IP-mit-Bindestrichen>.sslip.io   (z. B. https://203-0-113-10.sslip.io)
+# =============================================================================
+runcmd:
+  - - bash
+    - -c
+    - |
+      export DASHBOARD_PASSWORD='HIER-DEIN-PASSWORT-EINTRAGEN'
+      export TELEGRAM_BOT_TOKEN=''
+      export TELEGRAM_CHAT_ID=''
+      curl -fsSL https://raw.githubusercontent.com/gasrider/Treading-Bot/master/deploy/install.sh | bash > /var/log/tradingbot-install.log 2>&1
