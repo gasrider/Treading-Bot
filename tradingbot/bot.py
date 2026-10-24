@@ -2,11 +2,11 @@
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import ccxt
 import pandas as pd
 
+from . import control
 from .config import config_files, load_config
 from .data import fetch_recent
 from .risk import RiskGuard, position_size
@@ -14,9 +14,8 @@ from .strategy import add_indicators, initial_levels, signal_at, trail_stop, war
 
 log = logging.getLogger(__name__)
 
-KILL_SWITCH = Path("state") / "STOP"      # anlegen = alles verkaufen, Handel stoppen
-RESUME_FILE = Path("state") / "RESUME"    # anlegen = Stopp/Notbremse aufheben
 EQUITY_HISTORY_MAX = 24 * 365
+EVENTS_MAX = 300                          # Ereignis-Protokoll fürs Dashboard
 MARKET_CANDLES = 96                       # so viele Kerzen zeigt das Dashboard pro Paar
 
 
@@ -65,9 +64,9 @@ class TradingBot:
         }
         self.store.save(self.state)
         tp_txt = f"{tp:.2f}" if tp else "-"
-        self.notifier.send(
+        self.event(
             f"🟢 KAUF {symbol}: {fill.qty:.6f} @ {fill.price:.2f} {self.cfg['quote']} "
-            f"| Stop {stop:.2f} | Ziel {tp_txt}"
+            f"| Stop {stop:.2f} | Ziel {tp_txt}", "trade"
         )
 
     def close_position(self, symbol: str, reason: str) -> None:
@@ -82,14 +81,24 @@ class TradingBot:
         })
         self.store.save(self.state)
         icon = "✅" if pnl > 0 else "🔴"
-        self.notifier.send(
+        self.event(
             f"{icon} VERKAUF {symbol} ({reason}): {fill.qty:.6f} @ {fill.price:.2f} "
-            f"| Ergebnis {pnl:+.2f} {self.cfg['quote']}"
+            f"| Ergebnis {pnl:+.2f} {self.cfg['quote']}", "trade"
         )
 
     def close_all(self, reason: str) -> None:
         for symbol in list(self.state["positions"]):
             self.close_position(symbol, reason)
+
+    def event(self, text: str, kind: str = "info", notify: bool = True) -> None:
+        """Ereignis fürs Dashboard-Protokoll merken und (optional) per Telegram melden."""
+        events = self.state.setdefault("events", [])
+        events.append({"t": datetime.now(timezone.utc).isoformat(timespec="seconds"), "kind": kind, "text": text})
+        del events[:-EVENTS_MAX]
+        if notify:
+            self.notifier.send(text)
+        else:
+            log.info(text)
 
     def record_equity(self, equity: float) -> None:
         """Kapitalverlauf höchstens einmal pro Stunde mitschreiben (für das Dashboard)."""
@@ -101,16 +110,27 @@ class TradingBot:
         del history[:-EQUITY_HISTORY_MAX]
 
     def handle_control_files(self) -> None:
-        if RESUME_FILE.exists():
-            KILL_SWITCH.unlink(missing_ok=True)
-            RESUME_FILE.unlink(missing_ok=True)
+        if control.RESUME_FILE.exists():
+            control.KILL_SWITCH.unlink(missing_ok=True)
+            control.RESUME_FILE.unlink(missing_ok=True)
             if self.state["halted"]:
                 self.state["halted"] = False
                 self.state["halt_reason"] = ""
                 self.state.pop("peak_equity", None)
                 self._halt_notified = False
-                self.notifier.send("▶️ Handel wieder freigegeben.")
-        if KILL_SWITCH.exists() and not (
+                self.event("▶️ Handel wieder freigegeben.")
+        paused = control.PAUSE_FILE.exists()
+        if paused != self.state.get("paused", False):
+            self.state["paused"] = paused
+            self.event("⏸️ Pause: keine neuen Käufe, Stops bleiben aktiv." if paused
+                       else "▶️ Pause beendet: der Bot kauft wieder bei Signalen.")
+        for cmd in control.take_commands():
+            symbol = cmd.get("symbol")
+            if cmd.get("action") == "close" and symbol in self.state["positions"]:
+                self.close_position(symbol, "Manuell geschlossen")
+            else:
+                log.warning("Unbekannter oder veralteter Auftrag ignoriert: %s", cmd)
+        if control.KILL_SWITCH.exists() and not (
             self.state["halted"] and self.state["halt_reason"].startswith("Not-Aus")
         ):
             self.close_all("Not-Aus")
@@ -132,7 +152,7 @@ class TradingBot:
             new = load_config(self.config_path)
         except Exception as e:
             log.error("Neue Einstellungen ungültig, alte bleiben aktiv: %s", e)
-            self.notifier.send(f"⚠️ Einstellungen nicht übernommen: {e}")
+            self.event(f"⚠️ Einstellungen nicht übernommen: {e}", "warn")
             return
         if new["mode"] != self.cfg["mode"] or new["exchange"] != self.cfg["exchange"]:
             log.warning("Modus/Börse ändern sich erst nach einem Neustart (tradingbot restart).")
@@ -140,9 +160,9 @@ class TradingBot:
         self.cfg = new
         self.params = new["strategy"]
         self.guard.cfg = new["risk"]
-        self.notifier.send(
+        self.event(
             f"⚙️ Neue Einstellungen aktiv: {', '.join(new['symbols'])} auf {new['timeframe']}, "
-            f"Risiko {new['risk']['risk_per_trade'] * 100:g} % pro Trade"
+            f"Risiko {new['risk']['risk_per_trade'] * 100:g} % pro Trade", "settings"
         )
 
     def update_market(self, symbol: str, data: pd.DataFrame, price: float | None) -> None:
@@ -196,10 +216,12 @@ class TradingBot:
                 self.close_position(symbol, "Trendwende")
         elif sig.entry and symbol in self.cfg["symbols"]:
             ok, why = self.guard.can_open(self.equity(), len(self.state["positions"]))
+            if ok and self.state.get("paused"):
+                ok, why = False, "Bot ist pausiert"
             if ok:
                 self.open_position(symbol, sig.atr, self.equity())
             else:
-                log.info("%s: Kaufsignal ignoriert – %s", symbol, why)
+                self.event(f"ℹ️ {symbol}: Kaufsignal ignoriert – {why}", "info", notify=False)
 
     # ---------- Ein Durchlauf ----------
     def step(self) -> None:
@@ -207,7 +229,7 @@ class TradingBot:
         self.handle_control_files()
         if self.state["halted"] and self.state["halt_reason"].startswith("Not-Aus"):
             if not self._halt_notified:
-                self.notifier.send("🛑 Not-Aus: alle Positionen verkauft, Bot handelt nicht mehr.")
+                self.event("🛑 Not-Aus: alle Positionen verkauft, Bot handelt nicht mehr.", "warn")
                 self._halt_notified = True
             self.store.save(self.state)
             return
@@ -238,13 +260,20 @@ class TradingBot:
         # 2) Risiko-Notbremse
         equity = self.equity(prices)
         self.state["equity"] = round(equity, 2)
+        if "benchmark" not in self.state and all(s in prices for s in self.cfg["symbols"]):
+            # Vergleichswert: was "einfach kaufen und halten" seit dem Start gebracht hätte
+            self.state["benchmark"] = {
+                "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "equity": round(equity, 2),
+                "prices": {s: prices[s] for s in self.cfg["symbols"]},
+            }
         self.guard.update(equity)
         self.record_equity(equity)
         if self.state["halted"]:
             if self.state["positions"]:
                 self.close_all("Notbremse")
             if not self._halt_notified:
-                self.notifier.send("⛔ " + self.state["halt_reason"] + " – Bot handelt nicht mehr.")
+                self.event("⛔ " + self.state["halt_reason"] + " – Bot handelt nicht mehr.", "warn")
                 self._halt_notified = True
             self.store.save(self.state)
             return
@@ -266,7 +295,7 @@ class TradingBot:
             capital = f"Kapital {self.equity():.2f} {self.cfg['quote']}"
         except Exception as e:  # Börse beim Start nicht erreichbar – trotzdem weiterlaufen
             capital = f"Kapital noch unbekannt ({e.__class__.__name__})"
-        self.notifier.send(
+        self.event(
             f"🤖 Bot gestartet ({mode}) – {', '.join(self.cfg['symbols'])} auf {self.cfg['timeframe']}, "
             + capital
         )
@@ -282,14 +311,14 @@ class TradingBot:
                 log.warning("Netzwerkproblem (%d): %s", errors, e)
             except (SystemExit, KeyboardInterrupt):
                 self.store.save(self.state)
-                self.notifier.send("⏹️ Bot-Prozess beendet.")
+                self.event("⏹️ Bot-Prozess beendet.", "warn")
                 raise
             except Exception as e:  # Bot soll bei unerwarteten Fehlern nicht sterben
                 errors += 1
                 self.state["last_error"] = str(e)[:300]
                 log.exception("Fehler im Durchlauf")
                 if errors in (1, 5, 20):
-                    self.notifier.send(f"⚠️ Fehler im Bot ({errors}x): {e}")
+                    self.event(f"⚠️ Fehler im Bot ({errors}x): {e}", "error")
             self.state["heartbeat"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             self.state["mode"] = self.cfg["mode"]
             self.store.save(self.state)

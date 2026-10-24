@@ -19,6 +19,8 @@ jobs:
       - run: python -m pytest -q
       - name: Shell-Skripte prüfen
         run: shellcheck deploy/*.sh
+      - name: Dashboard-JavaScript prüfen
+        run: node --check tradingbot/web/app.js
 
   docker:
     runs-on: ubuntu-latest

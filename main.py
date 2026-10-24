@@ -15,9 +15,10 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from tradingbot.backtest import run_backtest
-from tradingbot.bot import RESUME_FILE, TradingBot, status_text
+from tradingbot.bot import TradingBot, status_text
 from tradingbot.broker import LiveBroker, PaperBroker
 from tradingbot.config import load_config
+from tradingbot.control import RESUME_FILE
 from tradingbot.data import fetch_history, make_exchange, synthetic
 from tradingbot.notifier import Notifier
 from tradingbot.state import StateStore

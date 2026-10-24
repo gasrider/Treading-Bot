@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0e14">
+<meta name="robots" content="noindex, nofollow">
+<title>Trading-Bot</title>
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/vendor/lightweight-charts.standalone.production.js" defer></script>
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<noscript>Bitte JavaScript aktivieren.</noscript>
+
+<!-- Anmeldung -->
+<div id="login" class="login" hidden>
+  <form id="login-form" class="login-card" autocomplete="on">
+    <div class="brand"><img src="/static/icon.svg" alt="" width="36" height="36"><span>Trading-Bot</span></div>
+    <h1>Anmelden</h1>
+    <label>Benutzer<input name="user" autocomplete="username" required value="admin"></label>
+    <label>Passwort<input name="password" type="password" autocomplete="current-password" required autofocus></label>
+    <label class="check"><input type="checkbox" name="remember" checked> Angemeldet bleiben (30 Tage)</label>
+    <p id="login-error" class="form-error" role="alert"></p>
+    <button class="btn btn-primary btn-block" type="submit">Anmelden</button>
+  </form>
+</div>
+
+<!-- App -->
+<div id="app" class="app" hidden>
+  <aside class="sidebar">
+    <div class="brand"><img src="/static/icon.svg" alt="" width="28" height="28"><span>Trading-Bot</span></div>
+    <nav class="nav" id="nav"></nav>
+    <div class="sidebar-foot">
+      <button class="btn btn-ghost btn-sm" id="theme-btn" type="button" title="Design wechseln">◐ Design</button>
+      <button class="btn btn-ghost btn-sm" id="logout-btn" type="button">Abmelden</button>
+      <div class="credit">Charts: <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView Lightweight Charts™</a></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="topbar-left">
+        <span id="status-pill" class="pill"><span class="dot"></span><span id="status-text">Lädt…</span></span>
+        <span id="mode-badge" class="badge"></span>
+        <span id="next-eval" class="muted small"></span>
+      </div>
+      <div class="topbar-right">
+        <button class="btn btn-secondary" id="pause-btn" type="button"></button>
+        <button class="btn btn-danger" id="stop-btn" type="button"></button>
+        <button class="btn btn-ghost btn-icon mobile-only" id="menu-theme-btn" type="button" title="Design wechseln">◐</button>
+      </div>
+    </header>
+    <div id="banner"></div>
+
+    <section class="view" id="view-overview" data-title="Übersicht"></section>
+    <section class="view" id="view-chart" data-title="Chart">
+      <div class="card chart-card">
+        <div class="chart-toolbar">
+          <div class="seg" id="chart-symbols"></div>
+          <div class="seg" id="chart-tfs"></div>
+          <div class="seg toggles" id="chart-toggles"></div>
+        </div>
+        <div class="chart-legend" id="chart-legend"></div>
+        <div class="chart-main" id="chart-main"></div>
+        <div class="chart-sub-label muted small">RSI</div>
+        <div class="chart-rsi" id="chart-rsi"></div>
+        <div class="chart-foot muted small" id="chart-foot"></div>
+      </div>
+      <div class="grid-2">
+        <div class="card" id="chart-status"></div>
+        <div class="card" id="chart-explain"></div>
+      </div>
+    </section>
+    <section class="view" id="view-trades" data-title="Trades"></section>
+    <section class="view" id="view-stats" data-title="Statistik"></section>
+    <section class="view" id="view-settings" data-title="Einstellungen"></section>
+    <section class="view" id="view-log" data-title="Protokoll"></section>
+  </div>
+
+  <nav class="tabbar" id="tabbar"></nav>
+</div>
+
+<dialog id="confirm" class="dialog">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-text"></p>
+    <div class="dialog-actions">
+      <button class="btn btn-ghost" value="cancel" type="submit">Abbrechen</button>
+      <button class="btn btn-danger" value="ok" id="confirm-ok" type="submit"></button>
+    </div>
+  </form>
+</dialog>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>

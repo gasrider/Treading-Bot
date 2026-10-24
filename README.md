@@ -75,23 +75,25 @@ Der Bot startet im **Paper-Modus**: echte Kurse, virtuelle 1000 €. Lass ihn so
 
 ## 2. Das Dashboard
 
-Unter `https://<deine-adresse>` gibt es nach dem Login zwei Seiten:
+Unter `https://<deine-adresse>` meldest du dich mit Benutzer und Passwort an. Mit „Angemeldet bleiben“ gilt die Anmeldung 30 Tage. Das Dashboard aktualisiert sich alle 10 Sekunden von selbst und funktioniert am PC wie am Handy, im hellen und dunklen Design. Am Handy kannst du es über „Zum Startbildschirm hinzufügen“ wie eine App öffnen.
 
-**Übersicht**
-- **Status**: läuft / gestoppt / keine Antwort, dazu der Modus (PAPER oder LIVE)
-- **Kapital**, Höchststand, realisierter Gewinn, Trefferquote
-- **Märkte – was der Bot gerade sieht**: Für jedes Paar der aktuelle Kurs und ein Kerzen-Chart mit den drei EMA-Linien der Strategie. Bei offenen Positionen sind Einstieg, Stop und Ziel eingezeichnet. Dazu gibt es eine Ampel mit den Kaufbedingungen und einen Satz, **worauf der Bot gerade wartet**, z. B. „Kein Aufwärtstrend – der Bot kauft nicht“. Über den Link **„Live-Chart auf TradingView“** siehst du den Kurs in Echtzeit.
-- **Offene Positionen**, **letzte Trades**, **Kapitalverlauf** und die letzten **Log-Zeilen**
-- **🛑 NOT-AUS**: verkauft sofort alles und stoppt den Handel. Danach erscheint **▶️ Handel wieder freigeben**.
+| Seite | Was du dort siehst und tun kannst |
+|---|---|
+| **Übersicht** | Kapital, Gewinn heute, Gesamt-Rendite im Vergleich zu „Kaufen & Halten“, offener und realisierter Gewinn, größter Rückgang. **Märkte**: aktueller Kurs, Mini-Chart, Ampel der Kaufbedingungen und in Klartext, worauf der Bot gerade wartet. **Positionen**: Live-Gewinn, Abstand zu Stop und Ziel als Leiste, Hinweis „Gewinn gesichert“, Knopf zum Verkaufen. Dazu Kapitalverlauf und letzte Ereignisse. |
+| **Chart** | Interaktiver Kerzen-Chart (TradingView Lightweight Charts) mit Live-Kursen der Börse, Zoom und Verschieben, Intervallen 15 Min bis 1 Tag und den drei Linien der Strategie. Kauf- und Verkaufspfeile mit Ergebnis, Einstieg/Stop/Ziel als Linien, RSI-Fenster mit Kauf-Grenze, Fadenkreuz mit allen Werten. Daneben die Bot-Sicht und eine Erklärung der Regeln. |
+| **Trades** | Alle abgeschlossenen Trades, nach Paar filterbar. **CSV-Export** für Excel und die Steuer (Semikolon, Dezimalkomma). |
+| **Statistik** | Trefferquote, Profit-Faktor, Ø Gewinn/Verlust, Erwartungswert pro Trade, Haltedauer, Ergebnis pro Tag und pro Paar, Vergleich mit „Kaufen & Halten“. |
+| **Einstellungen** | Vorlagen (Vorsichtig / Ausgewogen / Offensiv), Handelspaare, Intervall, Risiko und Strategie, jeweils mit Erklärung und erlaubtem Bereich. Zeigt, **was die Werte in Euro bedeuten** (max. Verlust pro Trade, Notbremse …). Der Bot übernimmt Änderungen innerhalb einer Minute ohne Neustart. |
+| **Protokoll** | Ereignisse (Trades, Warnungen, Einstellungsänderungen) mit Filter, darunter das technische Log. |
 
-**Einstellungen**
-- Handelspaare (Häkchen oder eigene Paare wie `ATOM/EUR`), Kerzen-Intervall, alle Strategie- und Risikowerte
-- Ungültige Werte werden abgelehnt (z. B. höchstens 3 % Risiko pro Trade).
-- Der Bot übernimmt Änderungen **innerhalb einer Minute ohne Neustart** und meldet sie per Telegram.
-- Gespeichert wird in `state/settings.yaml`. **„Auf config.yaml zurücksetzen“** verwirft die Änderungen wieder.
-- **Modus (paper/live) und Börse** lassen sich aus Sicherheitsgründen **nur am Server** ändern (`tradingbot config`).
+**Steuerung** oben rechts, immer mit Sicherheitsabfrage:
+- **Pause**: kauft nichts Neues. Offene Positionen werden weiter mit Stop und Ziel überwacht.
+- **NOT-AUS**: verkauft sofort alles und stoppt den Handel. Danach erscheint **Handel freigeben**.
+- Einzelne Positionen verkaufst du in der Übersicht oder im Chart.
 
-Die Übersicht aktualisiert sich jede Minute und ist für das Handy optimiert. Tipp: Im Handy-Browser „Zum Startbildschirm hinzufügen“.
+**Modus (paper/live) und Börse** lassen sich aus Sicherheitsgründen **nur am Server** ändern (`tradingbot config`). So kann niemand mit deinem Dashboard-Passwort auf echtes Geld umschalten.
+
+**Sicherheit:** Anmeldung per verschlüsseltem Sitzungs-Cookie (nur über HTTPS, für andere Webseiten unzugänglich). Nach 10 falschen Passwörtern wird die IP 15 Minuten gesperrt. Eine strenge Content-Security-Policy erlaubt nur eigenen Code, und das Dashboard sieht keine Börsen-Schlüssel. Wenn du das Passwort änderst, werden alle bestehenden Anmeldungen ungültig.
 
 ---
 
@@ -271,8 +273,11 @@ tradingbot/
   indicators.py          EMA, RSI, ATR
   risk.py                Positionsgröße, Tageslimit, Notbremse
   broker.py              Paper- und Live-Orderausführung
-  bot.py                 Dauerbetrieb, Not-Aus, Lebenszeichen
-  dashboard.py           Web-Dashboard + Watchdog
+  bot.py                 Dauerbetrieb, Not-Aus, Pause, Lebenszeichen, Ereignisse
+  control.py             Steuerdateien zwischen Dashboard und Bot
+  analytics.py           Kennzahlen (Profit-Faktor, Drawdown, Vergleich …)
+  dashboard.py           Dashboard-Server: JSON-API, Anmeldung, Watchdog
+  web/                   Dashboard-Oberfläche (HTML/CSS/JS, Chart-Bibliothek)
   backtest.py            Historischer Test
   data.py                Kursdaten laden
 tests/                   Automatische Tests (laufen bei jedem Push auf GitHub)

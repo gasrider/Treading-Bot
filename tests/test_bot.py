@@ -1,12 +1,21 @@
 import pandas as pd
 import pytest
 
-from tradingbot import bot as bot_module
+from tradingbot import control
 from tradingbot.bot import TradingBot
 from tradingbot.broker import PaperBroker
 from tradingbot.data import synthetic
 from tradingbot.state import StateStore
 from tradingbot.strategy import add_indicators
+
+
+def patch_control(monkeypatch, tmp_path):
+    """Steuerdateien in ein Testverzeichnis umleiten."""
+    monkeypatch.setattr(control, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(control, "KILL_SWITCH", tmp_path / "STOP")
+    monkeypatch.setattr(control, "RESUME_FILE", tmp_path / "RESUME")
+    monkeypatch.setattr(control, "PAUSE_FILE", tmp_path / "PAUSE")
+    monkeypatch.setattr(control, "COMMANDS_DIR", tmp_path / "commands")
 
 
 class FakeExchange:
@@ -43,8 +52,7 @@ class SilentNotifier:
 
 @pytest.fixture
 def setup(cfg, tmp_path, monkeypatch):
-    monkeypatch.setattr(bot_module, "KILL_SWITCH", tmp_path / "STOP")
-    monkeypatch.setattr(bot_module, "RESUME_FILE", tmp_path / "RESUME")
+    patch_control(monkeypatch, tmp_path)
     cfg["symbols"] = ["BTC/EUR"]
     df = synthetic(3000)
     # Index auf Vergangenheit verschieben, damit alle Kerzen "abgeschlossen" sind
@@ -125,3 +133,36 @@ def test_drawdown_halts_bot(setup):
     assert bot.state["halted"]
     assert not bot.state["positions"]
     assert any("Drawdown" in m for m in notifier.messages)
+
+
+def test_pause_blocks_new_entries_but_keeps_running(setup):
+    bot, ex, notifier, _, first_entry, tmp_path = setup
+    (tmp_path / "PAUSE").write_text("")
+    ex.cursor = first_entry + 1
+    bot.step()
+    assert not bot.state["positions"]
+    assert bot.state["paused"]
+    assert any("Pause" in m for m in notifier.messages)
+    assert any("pausiert" in e["text"] for e in bot.state["events"])
+
+
+def test_close_command_sells_single_position(setup):
+    bot, ex, _, _, first_entry, _ = setup
+    ex.cursor = first_entry + 1
+    bot.step()
+    assert "BTC/EUR" in bot.state["positions"]
+    control.queue_command("close", symbol="BTC/EUR")
+    bot.step()
+    assert not bot.state["positions"]
+    assert bot.state["closed_trades"][-1]["reason"] == "Manuell geschlossen"
+    assert not list((control.COMMANDS_DIR).glob("*.json"))
+
+
+def test_events_and_benchmark_recorded(setup):
+    bot, ex, _, _, first_entry, _ = setup
+    ex.cursor = first_entry + 1
+    bot.step()
+    kinds = [e["kind"] for e in bot.state["events"]]
+    assert "trade" in kinds
+    assert bot.state["benchmark"]["prices"]["BTC/EUR"] > 0
+    assert bot.state["benchmark"]["equity"] == pytest.approx(1000, rel=0.01)

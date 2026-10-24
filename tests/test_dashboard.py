@@ -1,19 +1,23 @@
 import base64
+import http.client
+import json
 import threading
-import urllib.error
-import urllib.request
+import time
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
 
+import pandas as pd
 import pytest
 import yaml
 
-from tradingbot import bot as bot_module
 from tradingbot import config as config_module
-from tradingbot import dashboard
+from tradingbot import control, dashboard
+from tradingbot.data import synthetic
 from tradingbot.state import StateStore
+from tests.test_bot import FakeExchange, patch_control
 
 PASSWORD = "sehr-geheimes-passwort"
+SECRET = b"s" * 32
 
 
 def iso(minutes_ago=0):
@@ -22,102 +26,282 @@ def iso(minutes_ago=0):
 
 @pytest.fixture
 def env(cfg, tmp_path, monkeypatch):
-    for module in (bot_module, dashboard):
-        monkeypatch.setattr(module, "KILL_SWITCH", tmp_path / "STOP")
-        monkeypatch.setattr(module, "RESUME_FILE", tmp_path / "RESUME")
+    patch_control(monkeypatch, tmp_path)
     monkeypatch.setattr(dashboard, "LOG_FILE", tmp_path / "bot.log")
     monkeypatch.setattr(config_module, "SETTINGS_OVERRIDE", tmp_path / "settings.yaml")
-    (tmp_path / "bot.log").write_text("Zeile <script>alert(1)</script>\n")
+    (tmp_path / "bot.log").write_text("Zeile 1\nZeile <script>2</script>\n")
     store = StateStore(tmp_path / "state.json")
+    candles = [[iso(60 * (96 - i)), 100 + i, 102 + i, 99 + i, 101 + i] for i in range(96)]
     store.save({
-        "heartbeat": iso(1), "halted": False, "peak_equity": 1050.0, "paper_cash": 700.0,
-        "positions": {"BTC/EUR": {"qty": 0.005, "entry": 60000, "stop": 58000, "tp": 64000,
+        "heartbeat": iso(1), "halted": False, "peak_equity": 1050.0, "paper_cash": 700.0, "equity": 1010.0,
+        "day_start_equity": 1000.0,
+        "positions": {"BTC/EUR": {"qty": 0.005, "entry": 60000, "stop": 58000, "tp": 64000, "cost": 300.0,
                                   "opened_at": iso(30)}},
         "closed_trades": [{"symbol": "ETH/EUR", "entry": 2000, "exit": 2100, "qty": 0.1, "pnl": 9.5,
                            "reason": "Take-Profit", "opened_at": iso(300), "closed_at": iso(100)}],
         "equity_history": [[iso(120), 1000.0], [iso(60), 1020.0], [iso(0), 1010.0]],
+        "benchmark": {"time": iso(200), "equity": 1000.0, "prices": {"BTC/EUR": 60000, "ETH/EUR": 180}},
+        "last_bar": {"BTC/EUR": "2026-01-01 10:00:00+00:00"},
+        "events": [{"t": iso(5), "kind": "trade", "text": "🟢 KAUF BTC/EUR"}],
+        "market": {
+            "BTC/EUR": {"updated": iso(0), "timeframe": "1h", "price": 61000.0, "candles": candles, "rsi": 55.0,
+                        "uptrend": True, "fast_above_slow": True, "rsi_ok": True, "entry_signal": False, "error": ""},
+            "ETH/EUR": {"updated": iso(0), "timeframe": "1h", "price": 198.0, "candles": candles, "rsi": 40.0,
+                        "uptrend": False, "fast_above_slow": False, "rsi_ok": True, "entry_signal": False, "error": ""},
+        },
     })
-    server = ThreadingHTTPServer(("127.0.0.1", 0), dashboard.make_handler(lambda: cfg, store, "admin", PASSWORD))
+    df = synthetic(800)
+    df.index = df.index - (df.index[-1] - pd.Timestamp.now(tz="UTC")) - pd.Timedelta(hours=1)
+    fake = FakeExchange(df)
+    fake.cursor = 800
+    charts = dashboard.ChartProvider(exchange_factory=lambda name: fake)
+    handler = dashboard.make_handler(lambda: cfg, store, "admin", PASSWORD, SECRET, charts)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{server.server_port}", tmp_path, store
+    yield {"port": server.server_port, "tmp": tmp_path, "store": store, "fake": fake, "cfg": cfg}
     server.shutdown()
 
 
-def request(url, method="GET", password=PASSWORD, headers=None):
-    req = urllib.request.Request(url, method=method, data=b"" if method == "POST" else None)
-    if password:
-        token = base64.b64encode(f"admin:{password}".encode()).decode()
-        req.add_header("Authorization", "Basic " + token)
-    for k, v in (headers or {}).items():
-        req.add_header(k, v)
-
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *a, **k):
-            return None
-
-    try:
-        with urllib.request.build_opener(NoRedirect).open(req, timeout=5) as resp:
-            return resp.status, resp.read().decode()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode()
-
-
-def test_requires_login(env):
-    url, _, _ = env
-    assert request(url + "/", password=None)[0] == 401
-    assert request(url + "/", password="falsch")[0] == 401
-    assert request(url + "/health", password=None)[0] == 200
+def call(env, path, method="GET", body=None, cookie=None, basic=False, headers=None, write_header=True):
+    conn = http.client.HTTPConnection("127.0.0.1", env["port"], timeout=5)
+    hdrs = {"Host": f"127.0.0.1:{env['port']}"}
+    if method == "POST" and write_header:
+        hdrs["X-Requested-With"] = "tradingbot"
+    if cookie:
+        hdrs["Cookie"] = cookie
+    if basic:
+        hdrs["Authorization"] = "Basic " + base64.b64encode(f"admin:{PASSWORD}".encode()).decode()
+    hdrs.update(headers or {})
+    data = json.dumps(body).encode() if body is not None else None
+    if data:
+        hdrs["Content-Type"] = "application/json"
+    conn.request(method, path, body=data, headers=hdrs)
+    resp = conn.getresponse()
+    raw = resp.read()
+    conn.close()
+    ctype = resp.getheader("Content-Type", "")
+    payload = json.loads(raw) if ctype.startswith("application/json") else raw
+    return resp.status, payload, resp
 
 
-def test_page_shows_data_and_escapes_log(env):
-    url, _, _ = env
-    status, body = request(url + "/")
+def login(env, password=PASSWORD, remember=True, headers=None):
+    status, payload, resp = call(env, "/api/login", "POST",
+                                 {"user": "admin", "password": password, "remember": remember}, headers=headers)
+    return status, resp.getheader("Set-Cookie", "")
+
+
+@pytest.fixture
+def cookie(env):
+    status, set_cookie = login(env)
     assert status == 200
-    assert "BTC/EUR" in body and "Take-Profit" in body and "<polyline" in body
-    assert "<script>alert(1)</script>" not in body
-    assert "NOT-AUS" in body
+    return set_cookie.split(";")[0]
 
 
-def test_stop_and_resume_buttons_write_control_files(env):
-    url, tmp_path, _ = env
-    assert request(url + "/stop", "POST")[0] == 303
-    assert (tmp_path / "STOP").exists()
-    assert request(url + "/resume", "POST")[0] == 303
-    assert (tmp_path / "RESUME").exists()
+# ------------------------------------------------------------ Auslieferung & Sicherheit
+def test_index_and_static_files_served_with_strict_csp(env):
+    status, body, resp = call(env, "/")
+    assert status == 200 and b"/static/app.js" in body
+    csp = resp.getheader("Content-Security-Policy")
+    assert "script-src 'self'" in csp and "unsafe-inline" not in csp
+    assert resp.getheader("Referrer-Policy") == "same-origin"
+    status, body, resp = call(env, "/static/vendor/lightweight-charts.standalone.production.js")
+    assert status == 200 and resp.getheader("Content-Type").startswith("text/javascript") and b"Lightweight Charts" in body
+    assert call(env, "/static/../dashboard.py")[0] == 404
+    assert call(env, "/static/nope.js")[0] == 404
+    assert call(env, "/health")[0] == 200
 
 
-def test_cross_origin_post_rejected(env):
-    url, tmp_path, _ = env
-    status, _ = request(url + "/stop", "POST", headers={"Origin": "https://boese-seite.example"})
-    assert status == 403
-    assert not (tmp_path / "STOP").exists()
+def test_api_requires_login(env):
+    assert call(env, "/api/status")[0] == 401
+    assert call(env, "/api/session")[1]["authenticated"] is False
+    assert call(env, "/api/status", basic=True)[0] == 200  # für Skripte/curl
 
 
-def test_brute_force_lockout(env):
-    url, _, _ = env
+def test_login_sets_secure_session_cookie(env):
+    assert login(env, "falsch")[0] == 401
+    status, set_cookie = login(env, headers={"X-Forwarded-Proto": "https"})
+    assert status == 200
+    assert "HttpOnly" in set_cookie and "SameSite=Strict" in set_cookie and "Secure" in set_cookie
+    assert f"Max-Age={30 * 86400}" in set_cookie
+    cookie = set_cookie.split(";")[0]
+    assert call(env, "/api/session", cookie=cookie)[1]["authenticated"] is True
+    assert call(env, "/api/status", cookie=cookie)[0] == 200
+    assert call(env, "/api/status", cookie=cookie[:-2] + "00")[0] == 401  # manipuliert
+
+
+def test_short_session_without_remember(env):
+    status, set_cookie = login(env, remember=False)
+    assert status == 200 and "Max-Age=86400" in set_cookie and "Secure" not in set_cookie
+
+
+def test_login_lockout(env):
     for _ in range(dashboard.MAX_FAILED_LOGINS):
-        request(url + "/", password="falsch")
-    assert request(url + "/")[0] == 429  # auch das richtige Passwort ist jetzt gesperrt
+        login(env, "falsch")
+    assert login(env)[0] == 429
 
 
-def test_api_status_json(env):
-    url, _, _ = env
-    status, body = request(url + "/api/status")
-    assert status == 200 and '"status": "ok"' in body and '"equity": 1010.0' in body
+def test_sessions_expire_and_depend_on_password():
+    s = dashboard.Sessions(SECRET, "admin", PASSWORD)
+    token = s.issue()
+    assert s.valid(token)
+    assert not dashboard.Sessions(SECRET, "admin", "anderes-passwort-123").valid(token)
+    expired = f"{int(time.time()) - 5}." + token.split(".")[1]
+    assert not s.valid(expired)
+    assert not s.valid("kaputt")
 
 
+def test_writes_need_header_and_same_origin(env, cookie):
+    assert call(env, "/api/control", "POST", {"action": "pause"}, cookie=cookie, write_header=False)[0] == 403
+    status = call(env, "/api/control", "POST", {"action": "pause"}, cookie=cookie,
+                  headers={"Origin": "https://boese-seite.example"})[0]
+    assert status == 403 and not control.PAUSE_FILE.exists()
+    assert call(env, "/api/control", "POST", {"action": "pause"}, cookie=cookie,
+                headers={"Origin": f"http://127.0.0.1:{env['port']}"})[0] == 200
+
+
+# ------------------------------------------------------------ Daten
+def test_status_payload(env, cookie):
+    status, d, _ = call(env, "/api/status", cookie=cookie)
+    assert status == 200
+    assert d["bot"]["status"] == "ok" and d["bot"]["mode"] == "paper" and d["bot"]["next_eval"]
+    pos = d["positions"][0]
+    assert pos["symbol"] == "BTC/EUR" and pos["price"] == 61000.0
+    assert pos["upnl"] == pytest.approx(0.005 * 61000 - 300)
+    assert pos["progress"] == pytest.approx((61000 - 58000) / (64000 - 58000))
+    a = d["account"]
+    assert a["today_pnl"] == 10.0 and a["total_pct"] == 1.0 and a["realized"] == 9.5
+    assert a["benchmark_pct"] == pytest.approx(((61000 / 60000 - 1) + (198 / 180 - 1)) / 2 * 100, abs=0.01)
+    assert a["risk_per_trade_eur"] == pytest.approx(10.1)
+    btc, eth = d["markets"]
+    assert btc["text"].startswith("Position offen")
+    assert "Kein Aufwärtstrend" in eth["text"] and len(eth["spark"]) == 96
+    assert d["stats"]["count"] == 1 and d["events"][0]["kind"] == "trade"
+
+
+def test_chart_endpoint(env, cookie):
+    status, d, _ = call(env, "/api/chart?symbol=BTC/EUR&tf=1h", cookie=cookie)
+    assert status == 200 and d["source"] == "exchange"
+    assert len(d["candles"]) > 500 and {"time", "open", "high", "low", "close"} <= set(d["candles"][0])
+    assert len(d["ema_trend"]) == len(d["candles"]) and len(d["rsi"]) == len(d["candles"])
+    assert d["levels"] == {"entry": 60000, "stop": 58000, "tp": 64000}
+    assert d["markers"] and d["markers"][-1]["text"] == "Offen"
+    assert call(env, "/api/chart?symbol=<x>&tf=1h", cookie=cookie)[0] == 400
+    assert call(env, "/api/chart?symbol=BTC/EUR&tf=7m", cookie=cookie)[0] == 400
+
+
+def test_chart_falls_back_to_bot_snapshot(env, cookie):
+    def broken(*a, **k):
+        raise RuntimeError("offline")
+    env["fake"].fetch_ohlcv = broken
+    status, d, _ = call(env, "/api/chart?symbol=ETH/EUR&tf=4h", cookie=cookie)
+    assert status == 200 and d["source"] == "snapshot" and len(d["candles"]) == 96 and d["timeframe"] == "1h"
+    assert call(env, "/api/chart?symbol=SOL/EUR&tf=1h", cookie=cookie)[0] == 502
+
+
+def test_trades_and_csv_export(env, cookie):
+    status, d, _ = call(env, "/api/trades", cookie=cookie)
+    assert status == 200 and d["trades"][0]["symbol"] == "ETH/EUR" and d["stats"]["total_pnl"] == 9.5
+    status, raw, resp = call(env, "/api/trades.csv", cookie=cookie)
+    text = raw.decode("utf-8")
+    assert status == 200 and "attachment" in resp.getheader("Content-Disposition")
+    assert text.startswith("﻿") and "Paar;Menge" in text and "ETH/EUR;0,1;2000;2100;9,5;Take-Profit" in text
+
+
+def test_logs_endpoint(env, cookie):
+    d = call(env, "/api/logs?n=1", cookie=cookie)[1]
+    assert d["lines"] == ["Zeile <script>2</script>"]  # Escaping passiert im Browser (textContent)
+    assert call(env, "/api/logs?n=abc", cookie=cookie)[0] == 200
+
+
+# ------------------------------------------------------------ Steuerung
+def test_control_actions(env, cookie):
+    def act(action, **extra):
+        return call(env, "/api/control", "POST", {"action": action, **extra}, cookie=cookie)
+
+    assert act("stop")[0] == 200 and control.KILL_SWITCH.exists()
+    assert act("resume")[0] == 200 and control.RESUME_FILE.exists()
+    assert act("pause")[0] == 200 and control.PAUSE_FILE.exists()
+    assert call(env, "/api/status", cookie=cookie)[1]["bot"]["paused"] is True
+    assert act("unpause")[0] == 200 and not control.PAUSE_FILE.exists()
+    assert act("close", symbol="ETH/EUR")[0] == 400
+    assert act("close", symbol="BTC/EUR")[0] == 200
+    assert control.take_commands() == [{"action": "close", "symbol": "BTC/EUR"}]
+    assert act("bogus")[0] == 400
+
+
+# ------------------------------------------------------------ Einstellungen
+def settings_body(**changes):
+    body = {"symbols": ["BTC/EUR", "sol/eur"], "timeframe": "4h",
+            "strategy": {"ema_fast": 20, "ema_slow": 50, "ema_trend": 200, "rsi_max_entry": 70,
+                         "stop_atr": 2, "take_profit_atr": 4, "trailing_atr": "2,5"},
+            "risk": {"risk_per_trade": 0.005, "max_position_pct": 0.3, "max_open_positions": 3,
+                     "max_daily_loss": 0.03, "max_drawdown": 0.15}}
+    for path, value in changes.items():
+        sec, key = path.split(".")
+        body[sec][key] = value
+    return body
+
+
+def test_settings_get(env, cookie):
+    d = call(env, "/api/settings", cookie=cookie)[1]
+    keys = {f["key"] for f in d["fields"]}
+    assert {"risk_per_trade", "ema_trend"} <= keys and "mode" not in keys
+    assert d["mode"] == "paper" and "SOL/EUR" in d["pairs"] and d["equity"] == 1010.0
+    assert all(f["help"] for f in d["fields"])
+
+
+def test_settings_save_validated(env, cookie):
+    status, d, _ = call(env, "/api/settings", "POST", settings_body(), cookie=cookie)
+    assert status == 200, d
+    saved = yaml.safe_load(config_module.SETTINGS_OVERRIDE.read_text())
+    assert saved["symbols"] == ["BTC/EUR", "SOL/EUR"] and saved["timeframe"] == "4h"
+    assert saved["strategy"]["trailing_atr"] == 2.5 and saved["risk"]["max_open_positions"] == 3
+    assert "mode" not in saved
+
+
+@pytest.mark.parametrize("change, message", [
+    ({"risk.risk_per_trade": 0.1}, "Risiko pro Trade"),
+    ({"strategy.ema_fast": "abc"}, "Zahl"),
+    ({"strategy.ema_fast": "nan"}, "Zahl"),
+    ({"strategy.ema_fast": 80}, "schnelle EMA"),
+])
+def test_settings_rejects_invalid(env, cookie, change, message):
+    status, d, _ = call(env, "/api/settings", "POST", settings_body(**change), cookie=cookie)
+    assert status == 400 and message in d["error"]
+    assert not config_module.SETTINGS_OVERRIDE.exists()
+
+
+def test_settings_rejects_bad_symbol_and_mode_injection(env, cookie):
+    body = settings_body()
+    body["symbols"] = ["<script>"]
+    assert call(env, "/api/settings", "POST", body, cookie=cookie)[0] == 400
+    body = settings_body()
+    body["mode"] = "live"
+    assert call(env, "/api/settings", "POST", body, cookie=cookie)[0] == 200
+    assert "mode" not in yaml.safe_load(config_module.SETTINGS_OVERRIDE.read_text())
+
+
+def test_settings_reset(env, cookie):
+    config_module.SETTINGS_OVERRIDE.write_text("timeframe: 4h\n")
+    assert call(env, "/api/settings/reset", "POST", {}, cookie=cookie)[0] == 200
+    assert not config_module.SETTINGS_OVERRIDE.exists()
+
+
+# ------------------------------------------------------------ Gesundheit & Watchdog
 def test_health_states():
     assert dashboard.bot_health({})[0] == "unknown"
     assert dashboard.bot_health({"heartbeat": iso(1)})[0] == "ok"
+    assert dashboard.bot_health({"heartbeat": iso(1), "paused": True})[0] == "paused"
     assert dashboard.bot_health({"heartbeat": iso(30)})[0] == "down"
     assert dashboard.bot_health({"heartbeat": iso(1), "halted": True, "halt_reason": "x"})[0] == "halted"
 
 
 def test_watchdog_alerts_once_and_recovers(env):
-    _, _, store = env
+    store = env["store"]
 
     class Recorder:
-        messages = []
+        def __init__(self):
+            self.messages = []
 
         def send(self, text):
             self.messages.append(text)
@@ -136,98 +320,3 @@ def test_watchdog_alerts_once_and_recovers(env):
     store.save(state)
     dog.check()
     assert "wieder" in rec.messages[-1]
-
-
-def post_form(url, body):
-    req = urllib.request.Request(url, data=body.encode(), method="POST")
-    token = base64.b64encode(f"admin:{PASSWORD}".encode()).decode()
-    req.add_header("Authorization", "Basic " + token)
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
-
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *a, **k):
-            return None
-
-    try:
-        with urllib.request.build_opener(NoRedirect).open(req, timeout=5) as resp:
-            return resp.status, resp.read().decode()
-    except urllib.error.HTTPError as err:
-        return err.code, err.read().decode()
-
-
-def settings_body(**changes):
-    from urllib.parse import urlencode
-
-    fields = {"symbols": ["BTC/EUR", "SOL/EUR"], "extra_symbols": "atom/eur", "timeframe": "4h",
-              "strategy.ema_fast": "20", "strategy.ema_slow": "50", "strategy.ema_trend": "200",
-              "strategy.rsi_max_entry": "70", "strategy.stop_atr": "2", "strategy.take_profit_atr": "4",
-              "strategy.trailing_atr": "2,5", "risk.risk_per_trade": "0,5", "risk.max_position_pct": "30",
-              "risk.max_open_positions": "3", "risk.max_daily_loss": "3", "risk.max_drawdown": "15"}
-    fields.update(changes)
-    return urlencode(fields, doseq=True)
-
-
-def test_settings_page_shows_form(env):
-    url, _, _ = env
-    status, body = request(url + "/settings")
-    assert status == 200 and 'name="risk.risk_per_trade" value="1"' in body and "SOL/EUR" in body
-
-
-def test_settings_save_writes_validated_overrides(env):
-    url, tmp_path, _ = env
-    status, _ = post_form(url + "/settings", settings_body())
-    assert status == 303
-    saved = yaml.safe_load((tmp_path / "settings.yaml").read_text())
-    assert saved["symbols"] == ["BTC/EUR", "SOL/EUR", "ATOM/EUR"]
-    assert saved["timeframe"] == "4h"
-    assert saved["risk"]["risk_per_trade"] == pytest.approx(0.005)
-    assert saved["strategy"]["trailing_atr"] == pytest.approx(2.5)
-    assert saved["risk"]["max_open_positions"] == 3
-    assert "mode" not in saved
-
-
-def test_settings_invalid_rejected_and_values_kept(env):
-    url, tmp_path, _ = env
-    status, body = post_form(url + "/settings", settings_body(**{"risk.risk_per_trade": "10"}))
-    assert status == 400 and "Risiko pro Trade" in body and 'value="10"' in body
-    assert not (tmp_path / "settings.yaml").exists()
-    status, body = post_form(url + "/settings", settings_body(extra_symbols="<script>"))
-    assert status == 400 and "<script>" not in body
-
-
-def test_settings_reset(env):
-    url, tmp_path, _ = env
-    (tmp_path / "settings.yaml").write_text("timeframe: 4h\n")
-    assert post_form(url + "/settings/reset", "")[0] == 303
-    assert not (tmp_path / "settings.yaml").exists()
-
-
-def test_overview_shows_market(env):
-    url, _, store = env
-    state = store.load()
-    candles = [[iso(60 * (96 - i)), 100 + i, 102 + i, 99 + i, 101 + i] for i in range(96)]
-    state["market"] = {"ETH/EUR": {"updated": iso(0), "timeframe": "1h", "price": 196.5, "candles": candles,
-                                   "ema_fast": [100.0 + i for i in range(96)], "ema_slow": [99.0 + i for i in range(96)],
-                                   "ema_trend": [95.0 + i for i in range(96)], "rsi": 64.2, "atr": 2.0,
-                                   "uptrend": True, "fast_above_slow": True, "rsi_ok": True,
-                                   "entry_signal": False, "exit_signal": False, "error": ""}}
-    store.save(state)
-    status, body = request(url + "/")
-    assert status == 200
-    assert "196.50" in body and "<rect" in body and "kauft nicht hinterher" in body
-    assert "tradingview.com/chart/?symbol=KRAKEN:ETHEUR" in body
-
-
-def test_browser_form_posts_are_accepted(env):
-    """Regression: mit Referrer-Policy no-referrer schickten Browser 'Origin: null' -> Not-Aus ging nicht."""
-    url, tmp_path, _ = env
-    req = urllib.request.Request(url + "/", method="HEAD")
-    token = base64.b64encode(f"admin:{PASSWORD}".encode()).decode()
-    req.add_header("Authorization", "Basic " + token)
-    with urllib.request.urlopen(req, timeout=5) as resp:
-        assert resp.headers["Referrer-Policy"] == "same-origin"
-        assert "script-src 'unsafe-inline'" in resp.headers["Content-Security-Policy"]  # confirm()-Rückfrage
-    host = url.split("//")[1]
-    assert request(url + "/stop", "POST", headers={"Origin": f"http://{host}"})[0] == 303
-    assert (tmp_path / "STOP").exists()
-    assert request(url + "/resume", "POST", headers={"Origin": "null"})[0] == 403
