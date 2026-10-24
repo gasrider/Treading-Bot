@@ -30,7 +30,7 @@ command -v apt-get >/dev/null || fail "Nur Ubuntu/Debian werden unterstützt."
 step "System aktualisieren und Pakete installieren"
 apt-get update -q
 apt-get upgrade -yq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold
-apt-get install -yq git curl ca-certificates openssl ufw fail2ban unattended-upgrades
+apt-get install -yq git curl ca-certificates openssl ufw fail2ban unattended-upgrades nano
 # Automatische Sicherheitsupdates des Betriebssystems
 dpkg-reconfigure -f noninteractive unattended-upgrades
 
