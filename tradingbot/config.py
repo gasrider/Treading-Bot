@@ -141,5 +141,6 @@ def load_config(path="config.yaml"):
         "telegram_token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
         "telegram_chat_id": os.getenv("TELEGRAM_CHAT_ID", ""),
         "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY", ""),
+        "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
     }
     return cfg

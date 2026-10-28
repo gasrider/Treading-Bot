@@ -127,16 +127,19 @@ Unter `https://<deine-adresse>` meldest du dich mit Benutzer und Passwort an. Mi
 
 ---
 
-## 2a. KI (Claude) aktivieren
+## 2a. KI aktivieren – kostenlos mit Google Gemini
 
-1. Auf [console.anthropic.com](https://console.anthropic.com) anmelden, Guthaben aufladen (z. B. 10 $) und unter **API Keys** einen Schlüssel erstellen.
-2. Auf dem Server `tradingbot env` ausführen, `ANTHROPIC_API_KEY=` ausfüllen und speichern.
-3. Im Dashboard unter **Einstellungen → Scanner & KI** den Modus wählen:
-   - **Darf Käufe verhindern** (Standard): Claude prüft jedes Kaufsignal und kann es blockieren.
-   - **Nur Hinweise**: Claude kommentiert, der Bot entscheidet nach Regeln.
+1. Auf [aistudio.google.com/apikey](https://aistudio.google.com/apikey) mit deinem Google-Konto anmelden und **„API-Schlüssel erstellen“** klicken. Eine Kreditkarte ist nicht nötig.
+2. Auf dem Server `tradingbot env` ausführen und den Schlüssel bei `GEMINI_API_KEY=` eintragen. Fehlt die Zeile, ganz unten ergänzen. Dann speichern.
+3. Fertig. Der Bot nutzt ab dem nächsten Durchlauf Gemini (`gemini-3.8-flash`, bei Bedarf automatisch `gemini-3.5-flash-lite`). Den Modus wählst du im Dashboard unter **Einstellungen → Scanner & KI**:
+   - **Darf Käufe verhindern** (Standard): Die KI prüft jedes Kaufsignal und kann es blockieren.
+   - **Nur Hinweise**: Die KI kommentiert, der Bot entscheidet nach Regeln.
    - **Aus**.
 
-**Kosten:** Modell Claude Opus 5.5, ca. 2–5 Cent pro geprüftem Kaufsignal und ca. 20–50 Cent pro Tagesanalyse mit Websuche. Ein **Monatsbudget** (Standard 20 $, in `config.yaml` unter `ai.monthly_budget_usd`) deckelt die Ausgaben; danach entscheiden die Regeln allein. Fällt die KI aus, entscheiden ebenfalls die Regeln.
+**Kosten:** Im Gratis-Kontingent von Google fallen **keine Kosten** an, solange du dem Projekt in Google AI Studio kein Zahlungsmittel hinzufügst. Der Bot stellt nur wenige Anfragen pro Tag: eine pro Kaufsignal und eine Tagesanalyse mit Google-Suche. Ist das Tageslimit einmal erreicht, schlägt die Anfrage einfach fehl, und die Regeln entscheiden allein.
+**Hinweis:** Im Gratis-Kontingent darf Google die Anfragen zur Verbesserung seiner Produkte verwenden. Der Bot schickt nur Marktdaten, keine persönlichen Daten.
+
+Alternativ, kostenpflichtig: **Claude** von Anthropic mit `ANTHROPIC_API_KEY` (wird nur genutzt, wenn kein Gemini-Schlüssel gesetzt ist oder `ai.provider: claude`; Monatsbudget `ai.monthly_budget_usd`).
 
 **Prüfe die KI-Bilanz regelmäßig:** Verhindert die KI vor allem Käufe, die Gewinne geworden wären, schadet sie mehr, als sie nützt. Dann stell auf „Nur Hinweise“ oder „Aus“.
 
@@ -170,6 +173,7 @@ Per SSH verbinden (`ssh root@<SERVER-IP>`), dann:
 | `docker compose run --rm bot python main.py backtest --alle` | Backtest über alle Märkte mit Rangliste |
 | `tradingbot update` | Neueste Version sofort holen (passiert sonst täglich automatisch) |
 | `tradingbot access` | Dashboard-Adresse und Zugangsdaten anzeigen |
+| `tradingbot diagnose` | Fehlersuche: Dienste, Speicher, letzte Fehler auf einen Blick (zum Weiterschicken) |
 | `tradingbot pause` / `start` | Bot anhalten/fortsetzen (**ohne** Verkauf; dann gibt es keine Stop-Überwachung!) |
 
 Alles liegt in `/opt/tradingbot`. Der Zustand (Kontostand, Positionen, Trades) steht in `state/`, die Logs in `logs/`.

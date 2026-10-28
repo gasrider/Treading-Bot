@@ -60,7 +60,9 @@ class TradingBot:
             broker.quote_fn = self._quote
             broker.cost_fn = lambda s: trading_costs(self.cfg, self.inst(s).asset_class)
         self.guard = RiskGuard(cfg["risk"], self.state)
-        self.ai = ai or AIAnalyst(cfg.get("ai"), cfg.get("secrets", {}).get("anthropic_api_key", ""), self.state)
+        secrets = cfg.get("secrets", {})
+        self.ai = ai or AIAnalyst(cfg.get("ai"), secrets.get("anthropic_api_key", ""), self.state,
+                                  gemini_key=secrets.get("gemini_api_key", ""))
         self._halt_notified = self.state["halted"]
         self._regime_checked = 0.0
 
@@ -412,8 +414,8 @@ class TradingBot:
             brief = self.ai.market_brief(self.market_overview())
             if brief:
                 self.event("🧠 Neue KI-Marktanalyse verfügbar (Dashboard → KI).", "info", notify=False)
-        self.state["ai"]["status"] = {"mode": self.ai.mode, "available": self.ai.available, "model": self.ai.cfg["model"],
-                                      "budget_usd": self.ai.cfg["monthly_budget_usd"]}
+        self.state["ai"]["status"] = {"mode": self.ai.mode, "available": self.ai.available, "model": self.ai.model_name,
+                                      "provider": self.ai.provider, "budget_usd": self.ai.cfg["monthly_budget_usd"]}
         self.state["data_error"] = getattr(self.market.yahoo, "last_error", "") if self.market.yahoo else ""
         self.store.save(self.state)
 
@@ -505,7 +507,7 @@ class TradingBot:
         classes = sorted({i.class_label for i in self.universe.values()})
         self.event(
             f"🤖 Bot gestartet ({mode}) – {len(self.universe)} Märkte ({', '.join(classes)}) auf "
-            f"{self.cfg['timeframe']}, KI: {self.ai.mode}, " + capital
+            f"{self.cfg['timeframe']}, KI: {self.ai.mode} ({self.ai.provider if self.ai.available else 'kein Schlüssel'}), " + capital
         )
         if self.cfg["mode"] == "live" and (self.cfg.get("universe") or {}):
             self.event("ℹ️ Aktien, ETFs, Rohstoffe und Devisen laufen nur im Paper-Modus – live wird nur Krypto gehandelt.",

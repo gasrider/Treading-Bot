@@ -136,3 +136,110 @@ def test_market_brief_without_web_search():
     ai, client = analyst([text_response("Text")], web_search=False)
     ai.market_brief({})
     assert client.calls[0]["tools"] == []
+
+
+# ------------------------------------------------------------ Google Gemini (kostenlos)
+class FakeResponse:
+    def __init__(self, status, data):
+        self.status_code = status
+        self._data = data
+        self.text = json.dumps(data)
+
+    def json(self):
+        return self._data
+
+
+class FakeSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def post(self, url, json=None, timeout=None, headers=None):
+        self.calls.append({"url": url, "json": json, "headers": headers})
+        r = self.responses.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+def interaction(text, citations=None, searches=0):
+    annotations = [{"type": "url_citation", "url": u, "title": t} for u, t in (citations or [])]
+    return {"id": "i1", "status": "completed",
+            "steps": [{"type": "google_search_call"}, {"type": "model_output",
+                                                       "content": [{"type": "text", "text": text, "annotations": annotations}]}],
+            "usage": {"total_input_tokens": 900, "total_output_tokens": 120, "grounding_tool_count": searches}}
+
+
+def gemini_analyst(responses, **cfg):
+    from tradingbot.ai import Gemini
+
+    session = FakeSession(responses)
+    g = Gemini("g-key", "gemini-3.8-flash", "gemini-3.5-flash-lite", session=session)
+    return AIAnalyst({"mode": "veto", **cfg}, "", {}, gemini_key="g-key", gemini=g), session
+
+
+def test_provider_selection():
+    assert AIAnalyst({"mode": "veto"}, "", {}, gemini_key="g").provider == "gemini"
+    assert AIAnalyst({"mode": "veto"}, "a", {}).provider == "claude"
+    assert AIAnalyst({"mode": "veto"}, "a", {}, gemini_key="g").provider == "gemini"   # kostenlos bevorzugt
+    assert AIAnalyst({"mode": "veto", "provider": "claude"}, "a", {}, gemini_key="g").provider == "claude"
+    assert AIAnalyst({"mode": "veto"}, "", {}, gemini_key="g").available
+    assert not AIAnalyst({"mode": "off"}, "", {}, gemini_key="g").available
+
+
+def test_gemini_review_request_and_parse():
+    ai, session = gemini_analyst([FakeResponse(200, interaction(json.dumps(
+        {"decision": "reject", "confidence": "hoch", "reason": "Zinsentscheid morgen.", "risks": ["Fed"]})))])
+    review = ai.review_entry(CONTEXT)
+    assert review.decision == "reject" and not review.approve and review.reason == "Zinsentscheid morgen."
+    assert review.cost_usd == 0.0
+    call = session.calls[0]
+    assert call["url"].endswith("/v1beta/interactions") and call["headers"]["x-goog-api-key"] == "g-key"
+    body = call["json"]
+    assert body["model"] == "gemini-3.8-flash" and body["store"] is False and "system_instruction" in body
+    assert body["response_format"]["mime_type"] == "application/json"
+    assert "additionalProperties" not in body["response_format"]["schema"]
+    assert "AAPL" in body["input"] and "tools" not in body
+    assert ai.summary()["cost"]["calls"] == 1 and ai.summary()["free"]
+
+
+def test_gemini_falls_back_to_lite_model_on_404():
+    ai, session = gemini_analyst([FakeResponse(404, {"error": {"message": "model not found"}}),
+                                  FakeResponse(200, interaction('{"decision":"approve","confidence":"mittel","reason":"ok","risks":[]}'))])
+    assert ai.review_entry(CONTEXT).decision == "approve"
+    assert [c["json"]["model"] for c in session.calls] == ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
+
+
+@pytest.mark.parametrize("response, text", [
+    (FakeResponse(429, {"error": {"message": "quota"}}), "Gratis-Kontingent"),
+    (FakeResponse(403, {"error": {"message": "denied"}}), "GEMINI_API_KEY"),
+    (FakeResponse(500, {"error": {"message": "boom"}}), "Gemini-Fehler 500: boom"),
+    (FakeResponse(200, {"status": "failed", "errors": [{"message": "kaputt"}]}), "kaputt"),
+    (FakeResponse(200, interaction("kein json")), "nicht lesbar"),
+])
+def test_gemini_errors_fall_back_to_rules(response, text):
+    ai, _ = gemini_analyst([response])
+    review = ai.review_entry(CONTEXT)
+    assert review.decision == "error" and review.approve and text in review.reason
+
+
+def test_gemini_network_error():
+    import requests
+
+    ai, _ = gemini_analyst([requests.ConnectionError("weg")])
+    assert "nicht erreichbar" in ai.review_entry(CONTEXT).reason
+
+
+def test_gemini_brief_with_google_search():
+    ai, session = gemini_analyst([FakeResponse(200, interaction(
+        "## Lage\nRuhig.", citations=[("https://news.example/x", "Meldung X")], searches=3))], brief_hour_utc=0)
+    brief = ai.market_brief({"maerkte": []})
+    assert brief["text"] == "## Lage\nRuhig." and brief["sources"] == [{"url": "https://news.example/x", "title": "Meldung X"}]
+    assert brief["cost_usd"] == 0.0 and brief["model"] == "gemini-3.8-flash"
+    assert session.calls[0]["json"]["tools"] == [{"type": "google_search"}]
+    assert ai.summary()["cost"]["searches"] == 3
+
+
+def test_gemini_brief_error_is_reported():
+    ai, _ = gemini_analyst([FakeResponse(429, {})], brief_hour_utc=0)
+    assert ai.market_brief({}) is None and "Gratis-Kontingent" in ai.state["brief_error"]

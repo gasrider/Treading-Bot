@@ -1,4 +1,7 @@
-"""KI-Analyst mit Claude: prüft Kaufsignale und schreibt eine tägliche Marktanalyse.
+"""KI-Analyst: prüft Kaufsignale und schreibt eine tägliche Marktanalyse.
+
+Anbieter: Google Gemini (Gratis-Kontingent, Standard wenn GEMINI_API_KEY gesetzt) oder
+Anthropic Claude (kostenpflichtig, ANTHROPIC_API_KEY).
 
 Grundsätze:
 - Die KI kann einen Kauf nur VERHINDERN (Modus "veto") oder kommentieren ("advisory").
@@ -9,6 +12,8 @@ Grundsätze:
 """
 import json
 import logging
+
+import requests
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
@@ -16,6 +21,9 @@ log = logging.getLogger(__name__)
 
 DEFAULTS = {
     "mode": "off",                 # off | advisory | veto
+    "provider": "auto",            # auto (Gemini wenn Schlüssel da, sonst Claude) | gemini | claude
+    "gemini_model": "gemini-3.8-flash",
+    "gemini_fallback_model": "gemini-3.5-flash-lite",
     "model": "claude-opus-5-5",
     "effort_review": "medium",
     "effort_brief": "medium",
@@ -29,6 +37,7 @@ DEFAULTS = {
     "price_search_per_1k": 10.0,
 }
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
 REVIEW_SYSTEM = """Du bist der Risikomanager eines regelbasierten Trading-Bots (Trendfolge, nur Kauf \
 und Verkauf, kein Hebel). Die Regeln des Bots sind über Jahre getestet; du bist eine zusätzliche \
@@ -66,6 +75,82 @@ Nutze die Websuche für aktuelle Nachrichten und nenne nur, was du gefunden hast
 Daten folgt. Keine Kaufempfehlungen, keine Kursziele."""
 
 
+class GeminiError(Exception):
+    pass
+
+
+class Gemini:
+    """Google Gemini über die Interactions-API (REST). Im Gratis-Kontingent ohne Kosten;
+    bei Überschreiten der Limits schlägt die Anfrage fehl (HTTP 429), es wird nichts verrechnet."""
+
+    def __init__(self, api_key: str, model: str, fallback_model: str = "", session=None, timeout: int = 120):
+        self.api_key = api_key
+        self.models = [m for m in (model, fallback_model) if m]
+        self.session = session or requests.Session()
+        self.timeout = timeout
+
+    def _post(self, body: dict) -> dict:
+        for i, model in enumerate(self.models):
+            try:
+                r = self.session.post(GEMINI_URL, json={**body, "model": model}, timeout=self.timeout,
+                                      headers={"x-goog-api-key": self.api_key, "Content-Type": "application/json"})
+            except requests.RequestException as e:
+                raise GeminiError(f"Gemini nicht erreichbar ({e.__class__.__name__})") from None
+            if r.status_code == 404 and i + 1 < len(self.models):
+                log.warning("Gemini-Modell %s nicht verfügbar – versuche %s", model, self.models[i + 1])
+                continue
+            if r.status_code == 429:
+                raise GeminiError("Gratis-Kontingent von Gemini gerade ausgeschöpft (Rate-Limit)")
+            if r.status_code in (401, 403):
+                raise GeminiError("Gemini-API-Schlüssel ungültig oder ohne Berechtigung (GEMINI_API_KEY prüfen)")
+            if r.status_code >= 400:
+                try:
+                    msg = r.json().get("error", {}).get("message", "")
+                except ValueError:
+                    msg = r.text
+                raise GeminiError(f"Gemini-Fehler {r.status_code}: {msg[:160]}")
+            data = r.json()
+            if data.get("status") == "failed":
+                errors = "; ".join(e.get("message", "") for e in data.get("errors") or [])
+                raise GeminiError(f"Gemini-Anfrage fehlgeschlagen: {errors[:160]}")
+            data["_model"] = model
+            return data
+        raise GeminiError("Kein Gemini-Modell verfügbar")
+
+    @staticmethod
+    def parse(data: dict) -> tuple[str, dict]:
+        """Antworttext und Quellen (URL -> Titel) aus einer Interaction."""
+        texts, sources = [], {}
+        for step in data.get("steps") or []:
+            if step.get("type") != "model_output":
+                continue
+            for block in step.get("content") or []:
+                if block.get("type") == "text":
+                    texts.append(block.get("text", ""))
+                for a in block.get("annotations") or []:
+                    if a.get("type") == "url_citation" and a.get("url"):
+                        sources[a["url"]] = a.get("title") or a["url"]
+        text = data["output_text"] if isinstance(data.get("output_text"), str) else "".join(texts)
+        return text.strip(), sources
+
+    def review(self, system: str, content: str, schema: dict) -> tuple[str, dict]:
+        data = self._post({"system_instruction": system, "input": content, "store": False,
+                           "response_format": {"type": "text", "mime_type": "application/json", "schema": schema}})
+        return self.parse(data)[0], data
+
+    def brief(self, system: str, content: str, search: bool) -> tuple[str, dict, dict]:
+        body = {"system_instruction": system, "input": content, "store": False}
+        if search:
+            body["tools"] = [{"type": "google_search"}]
+        data = self._post(body)
+        text, sources = self.parse(data)
+        return text, sources, data
+
+
+# Gemini akzeptiert nur einen Teil von JSON-Schema: ohne additionalProperties
+GEMINI_REVIEW_SCHEMA = {k: v for k, v in REVIEW_SCHEMA.items() if k != "additionalProperties"}
+
+
 @dataclass
 class Review:
     approve: bool
@@ -78,13 +163,15 @@ class Review:
 
 
 class AIAnalyst:
-    def __init__(self, cfg: dict, api_key: str, state: dict, client=None):
+    def __init__(self, cfg: dict, api_key: str, state: dict, client=None, gemini_key: str = "", gemini=None):
         self.cfg = {**DEFAULTS, **(cfg or {})}
         self.api_key = api_key
+        self.gemini_key = gemini_key
         self.state = state.setdefault("ai", {})
         self.state.setdefault("decisions", [])
         self.state.setdefault("shadow", [])
         self._client = client
+        self._gemini = gemini
 
     # ------------------------------------------------------------ Grundlagen
     @property
@@ -92,8 +179,39 @@ class AIAnalyst:
         return self.cfg["mode"] if self.cfg["mode"] in ("advisory", "veto") else "off"
 
     @property
+    def provider(self) -> str:
+        """gemini oder claude – bei 'auto' Gemini (kostenlos), sobald ein Gemini-Schlüssel da ist."""
+        p = self.cfg.get("provider", "auto")
+        if p in ("gemini", "claude"):
+            return p
+        has_gemini = bool(self.gemini_key or self._gemini)
+        has_claude = bool(self.api_key or self._client)
+        return "gemini" if has_gemini or not has_claude else "claude"
+
+    @property
+    def model_name(self) -> str:
+        return self.cfg["gemini_model"] if self.provider == "gemini" else self.cfg["model"]
+
+    @property
     def available(self) -> bool:
-        return self.mode != "off" and bool(self.api_key or self._client)
+        if self.mode == "off":
+            return False
+        if self.provider == "gemini":
+            return bool(self.gemini_key or self._gemini)
+        return bool(self.api_key or self._client)
+
+    def gemini(self) -> Gemini:
+        if self._gemini is None:
+            self._gemini = Gemini(self.gemini_key, self.cfg["gemini_model"], self.cfg["gemini_fallback_model"])
+        return self._gemini
+
+    def _book_gemini(self, data: dict) -> float:
+        """Gemini im Gratis-Kontingent: keine Kosten, nur Aufrufe zählen."""
+        month = self._month()
+        month["calls"] += 1
+        u = data.get("usage") or {}
+        month["searches"] = month.get("searches", 0) + (u.get("grounding_tool_count") or 0)
+        return 0.0
 
     def client(self):
         if self._client is None:
@@ -147,6 +265,12 @@ class AIAnalyst:
         brief = (self.state.get("brief") or {}).get("text", "Keine Marktanalyse vorhanden.")
         content = ("Aktuelle Marktanalyse des Tages:\n" + brief + "\n\nKaufsignal des Bots (JSON):\n"
                    + json.dumps(context, ensure_ascii=False, indent=1))
+        if self.provider == "gemini":
+            try:
+                text, data = self.gemini().review(REVIEW_SYSTEM, content, GEMINI_REVIEW_SCHEMA)
+            except GeminiError as e:
+                return self._fallback(str(e))
+            return self._parse_review(text, self._book_gemini(data))
         try:
             import anthropic
         except ImportError:  # pragma: no cover - Paket fehlt
@@ -170,6 +294,9 @@ class AIAnalyst:
         if response.stop_reason == "refusal":
             return self._fallback("KI hat die Prüfung abgelehnt")
         text = next((b.text for b in response.content if getattr(b, "type", "") == "text"), "")
+        return self._parse_review(text, cost)
+
+    def _parse_review(self, text: str, cost: float) -> Review:
         try:
             data = json.loads(text)
             decision = data["decision"]
@@ -227,6 +354,8 @@ class AIAnalyst:
         if not self.budget_left():
             self.state["brief_error"] = "Monatsbudget erreicht – keine neue Analyse"
             return None
+        if self.provider == "gemini":
+            return self._gemini_brief(overview)
         import anthropic
 
         tools = []
@@ -264,12 +393,32 @@ class AIAnalyst:
         self.state["brief_error"] = ""
         return brief
 
+    def _gemini_brief(self, overview: dict) -> dict | None:
+        content = "Daten des Bots (JSON):\n" + json.dumps(overview, ensure_ascii=False)
+        try:
+            text, sources, data = self.gemini().brief(BRIEF_SYSTEM, content, bool(self.cfg["web_search"]))
+        except GeminiError as e:
+            self.state["brief_error"] = f"Marktanalyse fehlgeschlagen: {e}"
+            log.warning(self.state["brief_error"])
+            return None
+        self._book_gemini(data)
+        if not text:
+            self.state["brief_error"] = "Gemini hat keine Analyse geliefert"
+            return None
+        brief = {"t": datetime.now(timezone.utc).isoformat(timespec="seconds"), "text": text,
+                 "sources": [{"url": u, "title": t} for u, t in list(sources.items())[:12]],
+                 "model": data.get("_model", self.cfg["gemini_model"]), "cost_usd": 0.0}
+        self.state["brief"] = brief
+        self.state["brief_error"] = ""
+        return brief
+
     def summary(self) -> dict:
         """Kennzahlen für das Dashboard (auch die 'KI-Bilanz' der verhinderten Käufe)."""
         shadows = self.state["shadow"]
         done = [s for s in shadows if s["status"] != "offen"]
         return {
-            "mode": self.mode, "available": self.available, "model": self.cfg["model"],
+            "mode": self.mode, "available": self.available, "model": self.model_name, "provider": self.provider,
+            "free": self.provider == "gemini",
             "budget_usd": self.cfg["monthly_budget_usd"], "cost": self._month(),
             "brief": self.state.get("brief"), "brief_error": self.state.get("brief_error", ""),
             "decisions": self.state["decisions"][-40:][::-1],

@@ -224,6 +224,9 @@ def ai_payload(cfg: dict, state: dict) -> dict:
     summary = AIAnalyst(cfg.get("ai"), "", {"ai": snapshot}).summary()
     status = snapshot.get("status") or {}
     summary["available"] = bool(status.get("available"))
+    summary["provider"] = status.get("provider", summary["provider"])
+    summary["free"] = summary["provider"] == "gemini"
+    summary["model"] = status.get("model", summary["model"])
     summary["mode_label"] = AI_MODE_LABELS.get(summary["mode"], summary["mode"])
     return summary
 

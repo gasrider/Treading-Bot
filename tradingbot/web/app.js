@@ -318,12 +318,12 @@ function aiCard(st) {
   const b = ai.bilanz;
   let body;
   if (ai.mode === "off") body = '<p class="muted">KI ist ausgeschaltet (Einstellungen → KI).</p>';
-  else if (!ai.available) body = '<p class="muted">KI aktiv, aber kein API-Schlüssel hinterlegt – es entscheiden die Regeln allein. Anleitung: Seite „KI“.</p>';
+  else if (!ai.available) body = '<p class="muted">KI aktiv, aber kein API-Schlüssel hinterlegt – es entscheiden die Regeln allein. Kostenlos einrichten: Seite „KI“.</p>';
   else {
     const last = ai.decisions[0];
     body = `${last ? `<div class="status-line ${last.decision === "reject" ? "tone-bad" : "tone-ok"}"><span class="dot"></span>
         <span><b>${esc(last.symbol)}</b>: ${last.decision === "reject" ? "Kauf verhindert" : last.decision === "approve" ? "genehmigt" : "nicht geprüft"} – ${esc(last.reason)}</span></div>` : '<p class="muted">Noch keine Kaufsignale geprüft.</p>'}
-      <p class="small muted">KI-Bilanz: ${b.rejected} Käufe verhindert · davon wären ${b.would_lose} Verluste und ${b.would_win} Gewinne gewesen · Kosten diesen Monat ${nf(2).format(ai.cost.usd)} $ von ${nf(0).format(ai.budget_usd)} $</p>`;
+      <p class="small muted">KI-Bilanz: ${b.rejected} Käufe verhindert · davon wären ${b.would_lose} Verluste und ${b.would_win} Gewinne gewesen · ${ai.free ? `Google Gemini, kostenlos · ${ai.cost.calls} Aufrufe diesen Monat` : `Kosten diesen Monat ${nf(2).format(ai.cost.usd)} $ von ${nf(0).format(ai.budget_usd)} $`}</p>`;
   }
   return `<div class="card"><div class="card-head"><h2>KI-Risikomanager</h2><span class="badge badge-ai">${esc(ai.mode_label)}</span></div>
     ${body}<a href="#/ai" data-go="ai">Zur KI-Seite</a></div>`;
@@ -478,13 +478,14 @@ function renderAI() {
   const st = S.status;
   if (!st) return;
   const ai = st.ai, b = ai.bilanz;
-  const setup = !ai.available ? `<div class="card"><h2>So aktivierst du die KI</h2><ol class="explain">
-      <li>Auf <a href="https://console.anthropic.com" target="_blank" rel="noopener noreferrer">console.anthropic.com</a> anmelden, Guthaben aufladen (z. B. 10 $) und unter „API Keys“ einen Schlüssel erstellen.</li>
-      <li>Auf dem Server <code>tradingbot env</code> ausführen und <code>ANTHROPIC_API_KEY=…</code> eintragen.</li>
-      <li>Hier unter Einstellungen den KI-Modus wählen. Kosten: ca. 2–5 Cent pro geprüftem Kaufsignal, ca. 20–50 Cent pro Tagesanalyse – gedeckelt durch das Monatsbudget.</li></ol></div>` : "";
+  const setup = !ai.available ? `<div class="card"><h2>So aktivierst du die KI – kostenlos</h2><ol class="explain">
+      <li>Auf <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">aistudio.google.com/apikey</a> mit deinem Google-Konto anmelden und auf „API-Schlüssel erstellen“ klicken. Keine Kreditkarte nötig.</li>
+      <li>Auf dem Server <code>tradingbot env</code> ausführen und den Schlüssel bei <code>GEMINI_API_KEY=</code> eintragen (Zeile ggf. selbst ergänzen), speichern.</li>
+      <li>Fertig – der Bot nutzt ab dem nächsten Durchlauf Google Gemini. Im Gratis-Kontingent entstehen keine Kosten; ist das Tageslimit erreicht, entscheiden einfach die Regeln.</li></ol>
+      <p class="muted small">Alternativ (kostenpflichtig): Claude von Anthropic mit <code>ANTHROPIC_API_KEY</code>.</p></div>` : "";
   const brief = ai.brief ? `<div class="brief">${mdLite(ai.brief.text)}</div>
       ${ai.brief.sources?.length ? `<details><summary class="muted small">${ai.brief.sources.length} Quellen</summary><ul class="sources">${ai.brief.sources.map((s) => `<li><a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.title || s.url)}</a></li>`).join("")}</ul></details>` : ""}
-      <p class="muted small">Erstellt ${localTime(ai.brief.t)} · ${esc(ai.brief.model)} · ca. ${nf(2).format(ai.brief.cost_usd)} $</p>`
+      <p class="muted small">Erstellt ${localTime(ai.brief.t)} · ${esc(ai.brief.model)} · ${ai.brief.cost_usd ? `ca. ${nf(2).format(ai.brief.cost_usd)} $` : "kostenlos"}</p>`
     : `<p class="muted">${esc(ai.brief_error || "Noch keine Analyse – sie entsteht einmal täglich (ab 06:00 UTC), sobald die KI aktiv ist.")}</p>`;
   const decisions = ai.decisions.map((d) => `<tr><td>${localTime(d.t)}</td><td><b>${esc(d.symbol)}</b></td>
       <td><span class="chip ${d.decision === "approve" ? "chip-ok" : d.decision === "reject" ? "chip-bad" : ""}">${d.decision === "approve" ? "genehmigt" : d.decision === "reject" ? (d.enforced ? "verhindert" : "abgelehnt (Hinweis)") : "Fehler"}</span></td>
@@ -494,8 +495,9 @@ function renderAI() {
       <td class="r ${cls(s.result_pct)}">${pct(s.result_pct)}</td><td class="wrap muted small">${esc(s.reason)}</td></tr>`).join("");
   $("#view-ai").innerHTML = `
     <div class="kpis">
-      ${kpi("Modus", esc(ai.mode_label), ai.available ? esc(ai.model) : "kein API-Schlüssel – Regeln entscheiden")}
-      ${kpi("Kosten diesen Monat", `${nf(2).format(ai.cost.usd)} $`, `Budget ${nf(0).format(ai.budget_usd)} $ · ${ai.cost.calls} Aufrufe`)}
+      ${kpi("Modus", esc(ai.mode_label), ai.available ? `${ai.provider === "gemini" ? "Google Gemini" : "Claude"} · ${esc(ai.model)}` : "kein API-Schlüssel – Regeln entscheiden")}
+      ${ai.free || !ai.available ? kpi("Kosten", "0,00 $", `kostenlos (Gratis-Kontingent) · ${ai.cost.calls} Aufrufe diesen Monat`)
+        : kpi("Kosten diesen Monat", `${nf(2).format(ai.cost.usd)} $`, `Budget ${nf(0).format(ai.budget_usd)} $ · ${ai.cost.calls} Aufrufe`)}
       ${kpi("Käufe verhindert", String(b.rejected), `${b.open} noch offen`)}
       ${kpi("Davon wären Verluste", String(b.would_lose), `und ${b.would_win} Gewinne`, b.would_lose >= b.would_win ? "pos" : "neg", "So wären die verhinderten Käufe mit denselben Stop-/Ziel-Regeln ausgegangen")}
       ${kpi("Vermieden (Summe)", pct(b.avoided_pct), "positiv = KI hat Verluste vermieden", cls(b.avoided_pct))}
@@ -856,9 +858,9 @@ function renderSettings() {
       <p class="field-help spaced">Endungen: Xetra <code>.DE</code>, Wien <code>.VI</code>, Paris <code>.PA</code>, Amsterdam <code>.AS</code>, Schweiz <code>.SW</code> · Rohstoffe <code>=F</code> · Devisen z. B. <code>EURUSD=X</code>. Häkchen entfernen = Markt nicht mehr beobachten.</p></div>
     <div class="card"><div class="card-head"><h2>Scanner &amp; KI</h2></div>
       <div class="fields">${sec("scanner")}
-        <div class="field"><span class="field-label">KI-Risikomanager (Claude)</span>
+        <div class="field"><span class="field-label">KI-Risikomanager</span>
           <div class="seg" id="ai-seg">${Object.entries(cfg.ai_modes).map(([k, l]) => `<button type="button" data-ai="${k}" class="${k === d.ai.mode ? "active" : ""}">${esc(l)}</button>`).join("")}</div>
-          <span class="field-help">„Darf Käufe verhindern“: Claude prüft jedes Kaufsignal und kann es blockieren. „Nur Hinweise“: Claude kommentiert, entscheidet aber nicht. Braucht einen API-Schlüssel (Seite „KI“).</span></div>
+          <span class="field-help">„Darf Käufe verhindern“: Die KI prüft jedes Kaufsignal und kann es blockieren. „Nur Hinweise“: Sie kommentiert, entscheidet aber nicht. Braucht einen API-Schlüssel – kostenlos mit Google Gemini (Seite „KI“).</span></div>
       </div></div>
     <div class="card"><div class="card-head"><h2>Risiko</h2></div><div class="fields">${sec("risk")}</div>
       <h3 class="spaced">Was das bei deinem Kapital bedeutet</h3><div class="impact" id="impact"></div></div>

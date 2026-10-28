@@ -31,9 +31,12 @@ regime:                     # Gesamtmarktlage aus S&P 500 (200-Tage-Linie) und V
   vix_caution: 22           # VIX darüber -> nur halbes Risiko
   vix_panic: 30             # VIX darüber -> keine neuen Käufe
 
-ai:                         # Claude als Risikomanager – braucht ANTHROPIC_API_KEY in .env
+ai:                         # KI als Risikomanager – braucht GEMINI_API_KEY (gratis) oder ANTHROPIC_API_KEY in .env
   mode: veto                # off | advisory (nur Hinweise) | veto (darf Käufe verhindern)
-  model: claude-opus-5-5
+  provider: auto            # auto = Gemini (kostenlos), wenn Schlüssel vorhanden, sonst Claude | gemini | claude
+  gemini_model: gemini-3.8-flash
+  gemini_fallback_model: gemini-3.5-flash-lite
+  model: claude-opus-5-5    # nur für Claude
   web_search: true          # tägliche Marktanalyse mit aktuellen Nachrichten
   monthly_budget_usd: 20    # Obergrenze; danach entscheiden die Regeln allein
   on_error: approve         # approve = bei KI-Ausfall entscheiden die Regeln | reject = dann nicht kaufen

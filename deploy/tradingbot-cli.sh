@@ -28,6 +28,20 @@ case "${1:-help}" in
     backtest)   docker compose run --rm bot python main.py backtest ;;
     update)     ./deploy/update.sh --force && tail -n 5 logs/update.log ;;
     access)     cat /root/tradingbot-zugang.txt ;;
+    diagnose)
+        echo "=== Dienste ===";        docker compose ps --format 'table {{.Name}}\t{{.Status}}'
+        echo; echo "=== Speicher ===";  free -h | head -3
+        echo; echo "=== Container-Last ==="; docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}'
+        echo; echo "=== Festplatte ===";  df -h / | tail -1
+        echo; echo "=== Bot-Status ===";  docker compose exec -T bot python main.py status 2>&1 | tail -15
+        echo; echo "=== Letzte Warnungen/Fehler (Bot) ==="
+        grep -hE "WARNING|ERROR|Traceback" logs/bot.log 2>/dev/null | tail -n 25
+        echo; echo "=== Letzte Fehler (Dashboard) ==="
+        grep -hE "ERROR|Traceback" logs/dashboard.log 2>/dev/null | tail -n 10
+        echo; echo "=== Abstürze/Neustarts (Docker) ==="
+        docker compose logs --since 24h 2>&1 | grep -iE "error|killed|exited|oom" | tail -n 10
+        echo; echo "Tipp: Diese Ausgabe kopieren und an Claude schicken (enthält keine Passwörter)."
+        ;;
     *)
         cat <<'EOF'
 tradingbot <befehl>
@@ -44,6 +58,7 @@ tradingbot <befehl>
   backtest  Backtest auf dem Server ausführen
   update    Neueste Version von GitHub holen und neu starten
   access    Dashboard-Adresse und Zugangsdaten anzeigen
+  diagnose  Fehlersuche: Dienste, Speicher, letzte Fehler auf einen Blick
 EOF
         ;;
 esac
